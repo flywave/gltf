@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"io/ioutil"
 
-	"github.com/qmuntal/gltf"
-	"github.com/qmuntal/gltf/modeler"
+	"github.com/flywave/gltf"
+	"github.com/flywave/gltf/modeler"
 )
 
 func Example() {

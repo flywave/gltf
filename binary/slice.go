@@ -5,7 +5,7 @@ import (
 	"image/color"
 	"reflect"
 
-	"github.com/qmuntal/gltf"
+	"github.com/flywave/gltf"
 )
 
 // MakeSliceBuffer returns the slice type associated with c and t and with the given element count.

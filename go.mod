@@ -1,4 +1,4 @@
-module github.com/qmuntal/gltf
+module github.com/flywave/gltf
 
 require github.com/go-test/deep v1.0.1
 

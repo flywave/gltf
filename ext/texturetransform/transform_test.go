@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/qmuntal/gltf"
+	"github.com/flywave/gltf"
 )
 
 func TestTextureTranform_ScaleOrDefault(t *testing.T) {

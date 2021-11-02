@@ -3,7 +3,7 @@ package unlit
 import (
 	"encoding/json"
 
-	"github.com/qmuntal/gltf"
+	"github.com/flywave/gltf"
 )
 
 const (

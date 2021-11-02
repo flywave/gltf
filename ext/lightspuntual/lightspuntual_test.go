@@ -5,8 +5,8 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/flywave/gltf"
 	"github.com/go-test/deep"
-	"github.com/qmuntal/gltf"
 )
 
 func TestLight_IntensityOrDefault(t *testing.T) {

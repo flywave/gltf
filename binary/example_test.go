@@ -3,8 +3,8 @@ package binary_test
 import (
 	"fmt"
 
-	"github.com/qmuntal/gltf"
-	"github.com/qmuntal/gltf/binary"
+	"github.com/flywave/gltf"
+	"github.com/flywave/gltf/binary"
 )
 
 func ExampleWrite() {
