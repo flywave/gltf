@@ -14,7 +14,7 @@ func TestDocument(t *testing.T) {
 			Scene:  Index(0),
 			Scenes: []*Scene{{Name: "Root Scene"}},
 			Asset: Asset{
-				Generator: "qmuntal/gltf",
+				Generator: "flywave/gltf",
 				Version:   "2.0",
 			},
 		}},
