@@ -129,7 +129,7 @@ func (b *Buffer) EmbeddedResource() {
 }
 
 // marshalData decode the buffer from the URI. If the buffer is not en embedded resource the returned array will be empty.
-func (b *Buffer) marshalData() ([]byte, error) {
+func (b *Buffer) MarshalData() ([]byte, error) {
 	if !b.IsEmbeddedResource() {
 		return nil, nil
 	}

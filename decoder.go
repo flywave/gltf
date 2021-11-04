@@ -176,7 +176,7 @@ func (d *Decoder) decodeBuffer(buffer *Buffer) error {
 	}
 	var err error
 	if buffer.IsEmbeddedResource() {
-		buffer.Data, err = buffer.marshalData()
+		buffer.Data, err = buffer.MarshalData()
 	} else if err = validateBufferURI(buffer.URI); err == nil {
 		buffer.Data = make([]byte, buffer.ByteLength)
 		err = d.ReadHandler.ReadFullResource(buffer.URI, buffer.Data)
