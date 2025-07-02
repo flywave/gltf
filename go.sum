@@ -1,2 +1,4 @@
+github.com/flywave/go3d v0.0.0-20250619003741-cab1a6ea6de6 h1:ARzvWQkEo1wmn0VTPN/qyrbQKcCRvbT3ACqn3rIb1p4=
+github.com/flywave/go3d v0.0.0-20250619003741-cab1a6ea6de6/go.mod h1:bvblxPT+cF0zgDi71CuusPPWCwqU0SikE9ySl2NzeQw=
 github.com/go-test/deep v1.0.1 h1:UQhStjbkDClarlmv0am7OXXO4/GaPdCGiUiMTvi28sg=
 github.com/go-test/deep v1.0.1/go.mod h1:wGDj63lr65AM2AQyKZd/NYHGb0R+1RLqB8NKt3aSFNA=
