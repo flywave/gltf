@@ -2,6 +2,8 @@ package mesh
 
 import "encoding/json"
 
+const ExtensionName = "EXT_mesh_features"
+
 // ExtMeshFeatures represents the EXT_mesh_features glTF Mesh Primitive extension
 type ExtMeshFeatures struct {
 	FeatureIDs []FeatureID                `json:"featureIds"`

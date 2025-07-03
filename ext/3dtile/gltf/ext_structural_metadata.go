@@ -3,7 +3,7 @@ package gltf
 import "encoding/json"
 
 // ExtStructuralMetadata represents the root EXT_structural_metadata object
-const EXT_structural_metadata_Name = "EXT_structural_metadata"
+const ExtensionName = "EXT_structural_metadata"
 
 type ExtStructuralMetadata struct {
 	Schema             *Schema             `json:"schema,omitempty"`
