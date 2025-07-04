@@ -61,6 +61,28 @@ func NewDocument() *Document {
 	}
 }
 
+// RemoveExtension remove extension
+func (doc *Document) RemoveExtension(name string) {
+	delete(doc.Extensions, name)
+}
+
+// AddExtensionUsed add extension used
+func (doc *Document) AddExtensionUsed(name string) {
+	if !doc.HasExtensionUsed(name) {
+		doc.ExtensionsUsed = append(doc.ExtensionsUsed, name)
+	}
+}
+
+// HasExtensionUsed check extension used
+func (doc *Document) HasExtensionUsed(name string) bool {
+	for _, ext := range doc.ExtensionsUsed {
+		if ext == name {
+			return true
+		}
+	}
+	return false
+}
+
 // An Accessor is a typed view into a bufferView.
 // An accessor provides a typed view into a bufferView or a subset of a bufferView
 // similar to how WebGL's vertexAttribPointer() defines an attribute in a buffer.
