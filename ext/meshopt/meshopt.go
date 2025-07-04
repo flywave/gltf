@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"unsafe"
 
 	"github.com/flywave/go-meshopt"
 
@@ -72,39 +73,111 @@ func decodeBufferView(doc *gltf.Document, bufView *gltf.BufferView) error {
 		return errors.New("无效的扩展格式")
 	}
 
+	// 验证buffer索引有效性
+	if int(ext.Buffer) >= len(doc.Buffers) {
+		return fmt.Errorf("无效的buffer索引: %d", ext.Buffer)
+	}
+
 	srcBuffer := doc.Buffers[ext.Buffer]
 	dstBuffer := doc.Buffers[bufView.Buffer]
+
+	// 验证字节范围有效性
+	if int(ext.ByteOffset+ext.ByteLength) > len(srcBuffer.Data) {
+		return fmt.Errorf("字节范围越界 [%d-%d] (buffer长度:%d)",
+			ext.ByteOffset, ext.ByteOffset+ext.ByteLength, len(srcBuffer.Data))
+	}
 
 	// 获取压缩数据
 	srcData := srcBuffer.Data[ext.ByteOffset : ext.ByteOffset+ext.ByteLength]
 
-	// 调用meshopt解码库 (需实现)
-	if dstData, err := meshoptDecode(
+	// 调用meshopt解码库
+	dstData, err := meshoptDecode(
 		ext.Count,
 		ext.ByteStride,
 		srcData,
 		ext.Mode,
 		ext.Filter,
-	); err != nil {
-		return err
-	} else {
-		copy(dstBuffer.Data[bufView.ByteOffset:], dstData)
+	)
+	if err != nil {
+		return fmt.Errorf("解压失败: %w", err)
 	}
 
-	// 移除扩展标记
+	// 验证目标缓冲区容量
+	requiredLen := int(bufView.ByteOffset) + len(dstData)
+	if len(dstBuffer.Data) < requiredLen {
+		dstBuffer.Data = append(dstBuffer.Data, make([]byte, requiredLen-len(dstBuffer.Data))...)
+	}
+
+	copy(dstBuffer.Data[bufView.ByteOffset:], dstData)
 	delete(bufView.Extensions, ExtensionName)
 	return nil
 }
 
 func meshoptDecode(count uint32, stride uint32, data []byte, mode CompressionMode, filter CompressionFilter) ([]byte, error) {
-	var buf bytes.Buffer
-
-	// TODO decode
-
-	if filter != FilterNone {
-		return decodeBufferViewWithFilter(buf.Bytes(), filter, stride)
+	// 验证输入参数有效性
+	if count == 0 {
+		return nil, errors.New("无效的count值")
 	}
-	return buf.Bytes(), nil
+	if stride == 0 {
+		return nil, errors.New("无效的stride值")
+	}
+
+	expectedSize := int(count) * int(stride)
+	if expectedSize <= 0 {
+		return nil, fmt.Errorf("无效的缓冲区大小计算 count:%d stride:%d", count, stride)
+	}
+
+	dst := make([]byte, expectedSize)
+
+	var err error
+	switch mode {
+	case ModeAttributes:
+		err = meshopt.DecompressVertexStream(
+			dst,
+			int(count),
+			int(stride),
+			data,
+		)
+	case ModeTriangles, ModeIndices:
+		strideInt := int(stride)
+		if strideInt != 2 && strideInt != 4 {
+			return nil, errors.New("invalid stride for index decompression")
+		}
+
+		if mode == ModeTriangles {
+			err = meshopt.DecompressIndexStream(
+				dst,
+				int(count),
+				strideInt,
+				data,
+			)
+		} else {
+			err = meshopt.DecompressIndexSequence(
+				dst,
+				int(count),
+				strideInt,
+				data,
+			)
+		}
+	default:
+		return nil, fmt.Errorf("unsupported compression mode: %s", mode)
+	}
+
+	if err != nil {
+		return nil, fmt.Errorf("解压失败: %w", err)
+	}
+
+	// 验证输出数据完整性
+	if len(dst) != expectedSize {
+		return nil, fmt.Errorf("解压数据大小不匹配 预期:%d 实际:%d",
+			expectedSize, len(dst))
+	}
+
+	// 应用后处理过滤器
+	if filter != FilterNone {
+		return decodeBufferViewWithFilter(dst, filter, stride)
+	}
+	return dst, nil
 }
 
 func MeshoptEncode(
@@ -185,33 +258,68 @@ func MeshoptEncode(
 	return buf.Bytes(), ext, nil
 }
 
-// 新增过滤器处理函数
 func applyFilter(data []byte, stride uint32, filter CompressionFilter) ([]byte, error) {
+	// 转换为float32切片用于编码过滤器
+	floatData := bytesToFloat32(data)
+
+	dst := make([]byte, len(data))
+	count := len(floatData) / int(stride/4) // stride以字节为单位，float32占4字节
+
 	switch filter {
 	case FilterOctahedral:
-		return encodeOctahedral(data, stride)
+		meshopt.CompressFilterOct(
+			dst,
+			count,
+			int(stride),
+			12,
+			floatData,
+		)
 	case FilterQuaternion:
-		return encodeQuaternion(data)
+		meshopt.CompressFilterQuat(
+			dst,
+			count,
+			int(stride),
+			12,
+			floatData,
+		)
 	case FilterExponential:
-		return encodeExponential(data)
+		meshopt.CompressFilterExp(
+			dst,
+			count,
+			int(stride),
+			0,
+			floatData,
+		)
 	case FilterNone:
 		return data, nil
 	default:
 		return nil, fmt.Errorf("不支持的过滤器类型: %s", filter)
 	}
+	return dst, nil
 }
 
 func decodeBufferViewWithFilter(data []byte, filter CompressionFilter, stride uint32) ([]byte, error) {
+	count := len(data) / int(stride)
+
 	switch filter {
 	case FilterOctahedral:
-		return decodeOctahedral(data, stride)
+		meshopt.DecompressFilterOct(data, count, int(stride))
 	case FilterQuaternion:
-		return decodeQuaternion(data)
+		meshopt.DecompressFilterQuat(data, count, int(stride))
 	case FilterExponential:
-		return decodeExponential(data)
+		meshopt.DecompressFilterExp(data, count, int(stride))
 	case FilterNone:
 		return data, nil
 	default:
 		return nil, fmt.Errorf("不支持的过滤器类型: %s", filter)
 	}
+	return data, nil
+}
+
+func bytesToFloat32(b []byte) []float32 {
+	floatSlice := make([]float32, len(b)/4)
+	for i := 0; i < len(floatSlice); i++ {
+		floatSlice[i] = *(*float32)(unsafe.Pointer(&b[i*4]))
+	}
+	return floatSlice
 }

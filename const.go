@@ -90,6 +90,20 @@ func (c *ComponentType) MarshalJSON() ([]byte, error) {
 	}[*c])
 }
 
+// GetSizeOfComponent returns the size of a component in bytes.
+func SizeOfComponent(compType ComponentType) int {
+	switch compType {
+	case ComponentByte, ComponentUbyte:
+		return 1
+	case ComponentShort, ComponentUshort:
+		return 2
+	case ComponentFloat, ComponentUint:
+		return 4
+	default:
+		return 4
+	}
+}
+
 // AccessorType specifies if the attribute is a scalar, vector, or matrix.
 type AccessorType uint8
 

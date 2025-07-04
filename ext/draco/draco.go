@@ -330,7 +330,7 @@ func float32ToBytes(data []float32) []byte {
 
 func indicesToBytes(indices []uint32, componentType gltf.ComponentType) []byte {
 	buf := new(bytes.Buffer)
-	buf.Grow(len(indices) * sizeOfComponent(componentType))
+	buf.Grow(len(indices) * gltf.SizeOfComponent(componentType))
 
 	switch componentType {
 	case gltf.ComponentUbyte:
@@ -507,7 +507,7 @@ func parseIndexData(doc *gltf.Document, accessorIdx *uint32) []uint32 {
 	}
 
 	start := view.ByteOffset + accessor.ByteOffset
-	end := start + accessor.Count*uint32(sizeOfComponent(accessor.ComponentType))
+	end := start + accessor.Count*uint32(gltf.SizeOfComponent(accessor.ComponentType))
 	if end > uint32(len(buffer.Data)) {
 		return nil
 	}
@@ -572,19 +572,19 @@ func parseAttributeData(doc *gltf.Document, accessor *gltf.Accessor) ([]float32,
 	result := make([]float32, count*int(components))
 	stride := int(view.ByteStride)
 	if stride == 0 {
-		stride = sizeOfComponent(accessor.ComponentType) * int(components)
+		stride = gltf.SizeOfComponent(accessor.ComponentType) * int(components)
 	}
 
 	offset := 0
 	for i := 0; i < count; i++ {
 		segment := data[i*stride:]
 		for j := 0; j < int(components); j++ {
-			if len(segment) < sizeOfComponent(accessor.ComponentType) {
+			if len(segment) < gltf.SizeOfComponent(accessor.ComponentType) {
 				return nil, fmt.Errorf("数据不足")
 			}
 
 			result[offset] = readComponent(segment, accessor.ComponentType)
-			segment = segment[sizeOfComponent(accessor.ComponentType):]
+			segment = segment[gltf.SizeOfComponent(accessor.ComponentType):]
 			offset++
 		}
 	}
@@ -605,20 +605,6 @@ func readComponent(data []byte, compType gltf.ComponentType) float32 {
 		return float32(int16(binary.LittleEndian.Uint16(data))) / 32767.0
 	default:
 		return 0
-	}
-}
-
-// 获取组件大小
-func sizeOfComponent(compType gltf.ComponentType) int {
-	switch compType {
-	case gltf.ComponentByte, gltf.ComponentUbyte:
-		return 1
-	case gltf.ComponentShort, gltf.ComponentUshort:
-		return 2
-	case gltf.ComponentFloat, gltf.ComponentUint:
-		return 4
-	default:
-		return 4
 	}
 }
 

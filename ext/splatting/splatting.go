@@ -4,10 +4,10 @@ import (
 	"bytes"
 	"encoding/binary"
 	"encoding/json"
-	"errors"
 	"fmt"
 
 	"github.com/flywave/gltf"
+	"github.com/flywave/gltf/ext/meshopt"
 )
 
 const (
@@ -313,25 +313,48 @@ func createAccessor(
 	return uint32(len(doc.Accessors) - 1), nil
 }
 
-// 合并顶点数据用于压缩
-func mergeVertexData(vd *VertexData) []float32 {
-	totalSize := len(vd.Positions) + len(vd.Colors) + len(vd.Scales) + len(vd.Rotations)
-	merged := make([]float32, 0, totalSize)
+// 添加压缩函数
+func compressWithMeshopt(data []byte) ([]byte, error) {
+	// 假设顶点数据格式为每个顶点包含14个float32（位置3 + 颜色4 + 缩放3 + 旋转4）
+	const floatSize = 4 // float32占4字节
+	const elementsPerVertex = 14
+	byteStride := elementsPerVertex * floatSize
 
-	merged = append(merged, vd.Positions...)
-	merged = append(merged, vd.Colors...)
-	merged = append(merged, vd.Scales...)
-	merged = append(merged, vd.Rotations...)
+	// 计算顶点数量
+	if len(data)%byteStride != 0 {
+		return nil, fmt.Errorf("invalid data length for vertex compression")
+	}
+	count := uint32(len(data) / byteStride)
 
-	return merged
+	// 调用meshopt压缩（使用ATTRIBUTES模式）
+	compressed, ext, err := meshopt.MeshoptEncode(
+		data,
+		count,
+		uint32(byteStride),
+		meshopt.ModeAttributes,
+		meshopt.FilterNone,
+	)
+
+	if err != nil {
+		return nil, fmt.Errorf("meshopt压缩失败: %w", err)
+	}
+
+	// 这里可以添加扩展信息处理（如果需要）
+	_ = ext // 暂时忽略扩展信息
+
+	return compressed, nil
 }
 
-// 添加虚拟的meshopt压缩实现（需替换为实际库调用）
-func compressWithMeshopt(data []byte) ([]byte, error) {
-	// 示例：实际应调用meshopt压缩库
-	// return meshopt.Compress(data, meshopt.ModeDefault)
-	if len(data) == 0 {
-		return nil, errors.New("空数据无法压缩")
-	}
-	return data, nil // 暂时返回原始数据
+// 修改WireGaussianSplatting函数中的合并逻辑
+func mergeVertexData(vd *VertexData) []byte {
+	// 创建足够大的缓冲区
+	buf := new(bytes.Buffer)
+
+	// 按原始浮点格式写入
+	binary.Write(buf, binary.LittleEndian, vd.Positions)
+	binary.Write(buf, binary.LittleEndian, vd.Colors)
+	binary.Write(buf, binary.LittleEndian, vd.Scales)
+	binary.Write(buf, binary.LittleEndian, vd.Rotations)
+
+	return buf.Bytes()
 }
