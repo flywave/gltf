@@ -12,15 +12,12 @@ import (
 )
 
 // WriteFeatureData 写入特征数据和FeatureID到glTF文档
-func WriteFeatureData(doc *gltf.Document, propertiesArray []map[string]interface{}, featureIDs [][][]int16) error {
+func WriteFeatureData(doc *gltf.Document, class string, propertiesArray []map[string]interface{}) error {
 	if doc == nil {
 		return fmt.Errorf("glTF document cannot be nil")
 	}
 	if len(propertiesArray) == 0 {
 		return nil
-	}
-	if len(featureIDs) == 0 {
-		return fmt.Errorf("featureIDs cannot be empty")
 	}
 
 	if len(doc.Meshes) == 0 {
@@ -32,8 +29,6 @@ func WriteFeatureData(doc *gltf.Document, propertiesArray []map[string]interface
 		return err
 	}
 
-	// 4. 更新Schema
-	class := "featureClass"
 	properties := rackProps(propertiesArray)
 
 	if err := updateSchema(metadata, class, properties); err != nil {
@@ -45,7 +40,7 @@ func WriteFeatureData(doc *gltf.Document, propertiesArray []map[string]interface
 		return err
 	}
 
-	if err := createFeatureIDAttributes(doc, featureIDs, uint32(tableIndex)); err != nil {
+	if err := createFeatureIDAttributes(doc, len(propertiesArray), uint32(tableIndex)); err != nil {
 		return err
 	}
 
@@ -120,66 +115,62 @@ func createPropertyTable(doc *gltf.Document, metadata *ext_gltf.ExtStructuralMet
 	return len(metadata.PropertyTables) - 1, nil
 }
 
-// 创建FeatureID属性并关联到Mesh
-func createFeatureIDAttributes(doc *gltf.Document, featureIDs [][][]int16, tableIndex uint32) error {
-	// 1. 为每个Primitive创建FeatureID属性
+func createFeatureIDAttributes(doc *gltf.Document, featureCount int, tableIndex uint32) error {
 	meshFeatures := ext_mesh.ExtMeshFeatures{}
 	if ext, exists := doc.Extensions[ext_mesh.ExtensionName]; exists {
 		if err := unmarshalExtension(ext, &meshFeatures); err != nil {
 			return err
 		}
 	}
-	count := 0
-	for meshIdx, idss := range featureIDs {
-		mesh := doc.Meshes[meshIdx]
-		for primIdx, ids := range idss {
-			// 2. 创建BufferView
-			buf := new(bytes.Buffer)
-			if err := binary.Write(buf, binary.LittleEndian, ids); err != nil {
-				return err
-			}
-			data := buf.Bytes()
-
-			bufferView := gltf.BufferView{
-				Buffer:     0,
-				ByteOffset: doc.Buffers[0].ByteLength,
-				ByteLength: uint32(len(data)),
-				Target:     gltf.TargetArrayBuffer,
-			}
-			bufferViewIdx := uint32(len(doc.BufferViews))
-			doc.BufferViews = append(doc.BufferViews, &bufferView)
-
-			doc.Buffers[0].Data = append(doc.Buffers[0].Data, data...)
-			doc.Buffers[0].ByteLength += uint32(len(data))
-			padBuffer(doc)
-
-			// 4. 创建Accessor
-			accessor := gltf.Accessor{
-				BufferView:    &bufferViewIdx,
-				ComponentType: gltf.ComponentShort,
-				Count:         uint32(len(ids)),
-				Type:          gltf.AccessorScalar,
-			}
-			accessorIdx := uint32(len(doc.Accessors))
-			doc.Accessors = append(doc.Accessors, &accessor)
-
-			attrName := fmt.Sprintf("_FEATURE_ID_%d", count)
-			count++
-			primitive := mesh.Primitives[primIdx]
-			if primitive.Attributes == nil {
-				primitive.Attributes = make(map[string]uint32)
-			}
-			primitive.Attributes[attrName] = accessorIdx
-
-			// 6. 记录FeatureID关联
-			meshFeatures.FeatureIDs = append(meshFeatures.FeatureIDs, ext_mesh.FeatureID{
-				Attribute:     &accessorIdx,
-				PropertyTable: &tableIndex,
-			})
-		}
+	ids := make([]uint32, featureCount)
+	for i := 0; i < featureCount; i++ {
+		ids[i] = uint32(i)
 	}
 
-	// 7. 更新EXT_mesh_features
+	buf := new(bytes.Buffer)
+	if err := binary.Write(buf, binary.LittleEndian, ids); err != nil {
+		return err
+	}
+	data := buf.Bytes()
+
+	bufferView := gltf.BufferView{
+		Buffer:     0,
+		ByteOffset: doc.Buffers[0].ByteLength,
+		ByteLength: uint32(len(data)),
+		Target:     gltf.TargetArrayBuffer,
+	}
+	bufferViewIdx := uint32(len(doc.BufferViews))
+	doc.BufferViews = append(doc.BufferViews, &bufferView)
+	accessor := gltf.Accessor{
+		BufferView:    &bufferViewIdx,
+		ComponentType: gltf.ComponentUshort,
+		Count:         uint32(len(ids)),
+		Type:          gltf.AccessorScalar,
+	}
+	accessorIdx := uint32(len(doc.Accessors))
+	doc.Accessors = append(doc.Accessors, &accessor)
+
+	doc.Buffers[0].Data = append(doc.Buffers[0].Data, data...)
+	doc.Buffers[0].ByteLength += uint32(len(data))
+	padBuffer(doc)
+
+	for _, mesh := range doc.Meshes {
+		for _, primitive := range mesh.Primitives {
+			featureID := ext_mesh.FeatureID{
+				FeatureCount:  uint32(featureCount),
+				Attribute:     &accessorIdx,
+				PropertyTable: &tableIndex,
+			}
+
+			if existing, ok := primitive.Extensions[ext_mesh.ExtensionName].(*ext_mesh.ExtMeshFeatures); ok {
+				existing.FeatureIDs = append(existing.FeatureIDs, featureID)
+			} else {
+				primitive.Extensions[ext_mesh.ExtensionName] = &ext_mesh.ExtMeshFeatures{
+					FeatureIDs: []ext_mesh.FeatureID{featureID},
+				}
+			}
+		}
+	}
 	doc.Extensions[ext_mesh.ExtensionName] = meshFeatures
 	return nil
 }
