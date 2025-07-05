@@ -244,3 +244,11 @@ func rackProps(props []map[string]interface{}) map[string][]interface{} {
 	}
 	return result
 }
+
+func unmarshalExtension(ext interface{}, target interface{}) error {
+	raw, err := json.Marshal(ext)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(raw, target)
+}

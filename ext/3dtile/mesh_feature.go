@@ -341,6 +341,7 @@ func (e *MeshFeaturesEncoder) UpdateFeatureID(
 // WriteFeatureData 批量写入特征数据和属性表（高级API）
 func (e *MeshFeaturesEncoder) WriteFeatureData(
 	doc *gltf.Document,
+	class string,
 	propertiesArray []map[string]interface{},
 	featureIDs [][][]int16,
 ) error {
@@ -358,8 +359,6 @@ func (e *MeshFeaturesEncoder) WriteFeatureData(
 		return fmt.Errorf("metadata initialization failed: %w", err)
 	}
 
-	// 3. 更新Schema定义
-	class := "featureClass"
 	if err := e.updateSchema(metadata, class, rackProps(propertiesArray)); err != nil {
 		return fmt.Errorf("schema update failed: %w", err)
 	}
@@ -378,6 +377,74 @@ func (e *MeshFeaturesEncoder) WriteFeatureData(
 	// 6. 更新文档扩展
 	doc.Extensions[extmesh.ExtensionName] = metadata
 	e.addExtensionUsed(doc, extmesh.ExtensionName)
+	return nil
+}
+
+func (e *MeshFeaturesEncoder) WriteInstanceFeatureData(doc *gltf.Document, class string, propertiesArray []map[string]interface{}) error {
+	if doc == nil {
+		return fmt.Errorf("glTF document cannot be nil")
+	}
+	if len(propertiesArray) == 0 {
+		return nil
+	}
+
+	if len(doc.Meshes) == 0 {
+		return fmt.Errorf("document must have mesh")
+	}
+
+	metadata, err := e.getOrCreateMetadata(doc)
+	if err != nil {
+		return err
+	}
+
+	properties := rackProps(propertiesArray)
+
+	if err := e.updateSchema(metadata, class, properties); err != nil {
+		return err
+	}
+
+	tableIndex, err := e.createPropertyTable(doc, metadata, class, properties)
+	if err != nil {
+		return err
+	}
+
+	if err := e.createInstanceFeatureIDAttributes(doc, len(propertiesArray), uint32(tableIndex)); err != nil {
+		return err
+	}
+
+	doc.Extensions[extmesh.ExtensionName] = metadata
+	return nil
+}
+
+func (e *MeshFeaturesEncoder) createInstanceFeatureIDAttributes(doc *gltf.Document, featureCount int, tableIndex uint32) error {
+	meshFeatures := extmesh.ExtMeshFeatures{}
+	if ext, exists := doc.Extensions[extmesh.ExtensionName]; exists {
+		if err := unmarshalExtension(ext, &meshFeatures); err != nil {
+			return err
+		}
+	}
+	ids := make([]uint32, featureCount)
+	for i := 0; i < featureCount; i++ {
+		ids[i] = uint32(i)
+	}
+
+	featureID := e.CreateFeatureID(uint32(len(ids)),
+		WithPropertyTable(tableIndex),
+		WithAttribute(e.createAccessor(doc, ids)),
+	)
+
+	for _, mesh := range doc.Meshes {
+		for _, primitive := range mesh.Primitives {
+			if existing, ok := primitive.Extensions[extmesh.ExtensionName].(*extmesh.ExtMeshFeatures); ok {
+				existing.FeatureIDs = append(existing.FeatureIDs, featureID)
+			} else {
+				primitive.Extensions[extmesh.ExtensionName] = &extmesh.ExtMeshFeatures{
+					FeatureIDs: []extmesh.FeatureID{featureID},
+				}
+			}
+		}
+	}
+	doc.Extensions[extmesh.ExtensionName] = meshFeatures
 	return nil
 }
 
@@ -523,6 +590,7 @@ func (e *MeshFeaturesEncoder) createPropertyTable(
 // WriteFeatureData 批量写入特征数据和属性表（独立函数）
 func WriteFeatureData(
 	doc *gltf.Document,
+	class string,
 	propertiesArray []map[string]interface{},
 	featureIDs [][][]int16,
 ) error {
@@ -530,12 +598,24 @@ func WriteFeatureData(
 	encoder := NewMeshFeaturesEncoder()
 
 	// 复用编码器实现
-	if err := encoder.WriteFeatureData(doc, propertiesArray, featureIDs); err != nil {
+	if err := encoder.WriteFeatureData(doc, class, propertiesArray, featureIDs); err != nil {
 		return fmt.Errorf("写入特征数据失败: %w", err)
 	}
 
 	// 确保扩展声明
 	encoder.addExtensionUsed(doc, extmesh.ExtensionName)
 	encoder.addExtensionUsed(doc, extgltf.ExtensionName)
+	return nil
+}
+
+func WriteInstanceFeatureData(doc *gltf.Document, class string, propertiesArray []map[string]interface{}) error {
+	encoder := NewMeshFeaturesEncoder()
+	if err := encoder.WriteInstanceFeatureData(doc, class, propertiesArray); err != nil {
+		return fmt.Errorf("写入特征数据失败: %w", err)
+	}
+
+	encoder.addExtensionUsed(doc, extmesh.ExtensionName)
+	encoder.addExtensionUsed(doc, extgltf.ExtensionName)
+
 	return nil
 }
