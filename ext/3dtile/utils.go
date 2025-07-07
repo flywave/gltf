@@ -56,16 +56,16 @@ func mustMarshal(v interface{}) json.RawMessage {
 }
 
 func PaddingByte(size int) []byte {
-	padding := size % 8
+	padding := size % 4
 	if padding != 0 {
-		padding = 8 - padding
+		padding = 4 - padding
 	}
 	if padding == 0 {
 		return []byte{}
 	}
 	pad := make([]byte, padding)
 	for i := range pad {
-		pad[i] = 0x20
+		pad[i] = 0x00
 	}
 	return pad
 }
@@ -199,7 +199,7 @@ func inferPropertyType(values interface{}) (extgltf.ClassPropertyType, *extgltf.
 	return "", nil, fmt.Errorf("unable to infer the type")
 }
 
-func rackProps(props []map[string]interface{}) map[string][]interface{} {
+func rackProps(props []map[string]interface{}) map[string]interface{} {
 	// 第一阶段：收集字段元信息
 	fieldMeta := make(map[string]struct {
 		typ          reflect.Type
@@ -224,23 +224,23 @@ func rackProps(props []map[string]interface{}) map[string][]interface{} {
 	}
 
 	// 第二阶段：构建结果
-	result := make(map[string][]interface{}, len(fieldMeta))
+	result := make(map[string]interface{}, len(fieldMeta))
 	for _, name := range fieldOrder {
 		meta := fieldMeta[name]
-		values := make([]interface{}, len(props))
-
+		sliceType := reflect.SliceOf(meta.typ)
+		values := reflect.MakeSlice(sliceType, len(props), len(props))
 		for i, prop := range props {
 			if val, exists := prop[name]; exists {
 				if reflect.TypeOf(val) == meta.typ {
-					values[i] = val
+					values.Index(i).Set(reflect.ValueOf(val))
 				} else {
-					values[i] = convertType(val, meta.typ, meta.defaultValue)
+					values.Index(i).Set(reflect.ValueOf(convertType(val, meta.typ, meta.defaultValue)))
 				}
 			} else {
-				values[i] = meta.defaultValue
+				values.Index(i).Set(reflect.ValueOf(meta.defaultValue))
 			}
 		}
-		result[name] = values
+		result[name] = values.Interface().(interface{})
 	}
 	return result
 }

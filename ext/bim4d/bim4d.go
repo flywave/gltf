@@ -201,29 +201,51 @@ func DecodeBIM4dMetadata(doc *gltf.Document) error {
 		}
 
 		for _, work := range env.Works {
-			if work.MetadataBufferView != nil {
-				bvIndex := *work.MetadataBufferView
-				if int(bvIndex) >= len(doc.BufferViews) {
-					return fmt.Errorf("buffer view index out of range: %d", bvIndex)
-				}
-
-				bv := doc.BufferViews[bvIndex]
-				if bv.Buffer >= uint32(len(doc.Buffers)) {
-					return fmt.Errorf("buffer index out of range: %d", bv.Buffer)
-				}
-
-				buffer := doc.Buffers[bv.Buffer]
-				data := buffer.Data[bv.ByteOffset : bv.ByteOffset+bv.ByteLength]
-
-				var metadata map[string]interface{}
-				if err := json.Unmarshal(data, &metadata); err != nil {
-					return fmt.Errorf("failed to decode metadata: %w", err)
-				}
-
-				work.Metadata = metadata
-				work.MetadataBufferView = nil
+			if err := decodeBIM4DdMetadata(doc, work); err != nil {
+				return err
 			}
 		}
+	}
+
+	ext, ok := doc.Extensions[ExtensionName]
+	if !ok {
+		return nil
+	}
+
+	env, ok := ext.(envelop)
+	if !ok {
+		return fmt.Errorf("invalid %s extension format", ExtensionName)
+	}
+	for _, work := range env.Works {
+		if err := decodeBIM4DdMetadata(doc, work); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func decodeBIM4DdMetadata(doc *gltf.Document, work *WorkItem) error {
+	if work.MetadataBufferView != nil {
+		bvIndex := *work.MetadataBufferView
+		if int(bvIndex) >= len(doc.BufferViews) {
+			return fmt.Errorf("buffer view index out of range: %d", bvIndex)
+		}
+
+		bv := doc.BufferViews[bvIndex]
+		if bv.Buffer >= uint32(len(doc.Buffers)) {
+			return fmt.Errorf("buffer index out of range: %d", bv.Buffer)
+		}
+
+		buffer := doc.Buffers[bv.Buffer]
+		data := buffer.Data[bv.ByteOffset : bv.ByteOffset+bv.ByteLength]
+
+		var metadata map[string]interface{}
+		if err := json.Unmarshal(data, &metadata); err != nil {
+			return fmt.Errorf("failed to decode metadata: %w", err)
+		}
+
+		work.Metadata = metadata
+		work.MetadataBufferView = nil
 	}
 	return nil
 }
@@ -242,31 +264,53 @@ func EncodeBIM4dMetadata(doc *gltf.Document) error {
 		}
 
 		for _, work := range env.Works {
-			if len(work.Metadata) > 0 {
-				jsonData, err := json.Marshal(work.Metadata)
-				if err != nil {
-					return fmt.Errorf("failed to encode metadata: %w", err)
-				}
-
-				// 创建新缓冲区
-				bufferIndex := uint32(len(doc.Buffers))
-				doc.Buffers = append(doc.Buffers, &gltf.Buffer{
-					ByteLength: uint32(len(jsonData)),
-					Data:       jsonData,
-				})
-
-				// 创建缓冲视图
-				bvIndex := uint32(len(doc.BufferViews))
-				doc.BufferViews = append(doc.BufferViews, &gltf.BufferView{
-					Buffer:     bufferIndex,
-					ByteOffset: 0,
-					ByteLength: uint32(len(jsonData)),
-				})
-
-				work.MetadataBufferView = &bvIndex
-				work.Metadata = nil
+			if err := encodeBIM4DdMetadata(doc, work); err != nil {
+				return err
 			}
 		}
+	}
+
+	ext, ok := doc.Extensions[ExtensionName]
+	if !ok {
+		return nil
+	}
+
+	env, ok := ext.(envelop)
+	if !ok {
+		return fmt.Errorf("invalid %s extension format", ExtensionName)
+	}
+	for _, work := range env.Works {
+		if err := encodeBIM4DdMetadata(doc, work); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func encodeBIM4DdMetadata(doc *gltf.Document, work *WorkItem) error {
+	if len(work.Metadata) > 0 {
+		jsonData, err := json.Marshal(work.Metadata)
+		if err != nil {
+			return fmt.Errorf("failed to encode metadata: %w", err)
+		}
+
+		// 创建新缓冲区
+		bufferIndex := uint32(len(doc.Buffers))
+		doc.Buffers = append(doc.Buffers, &gltf.Buffer{
+			ByteLength: uint32(len(jsonData)),
+			Data:       jsonData,
+		})
+
+		// 创建缓冲视图
+		bvIndex := uint32(len(doc.BufferViews))
+		doc.BufferViews = append(doc.BufferViews, &gltf.BufferView{
+			Buffer:     bufferIndex,
+			ByteOffset: 0,
+			ByteLength: uint32(len(jsonData)),
+		})
+
+		work.MetadataBufferView = &bvIndex
+		work.Metadata = nil
 	}
 	return nil
 }
@@ -395,5 +439,68 @@ func ValidateWorkItem(work *WorkItem) error {
 	if work.Total <= 0 {
 		return fmt.Errorf("total must be positive")
 	}
+	return nil
+}
+
+func GetWorkItems(doc *gltf.Document) []*WorkItem {
+	DecodeBIM4dMetadata(doc)
+	var wks []*WorkItem
+	for _, node := range doc.Nodes {
+		wks = append(wks, GetWorkItemsFromNode(node)...)
+	}
+	for _, ext := range doc.Extensions {
+		env, ok := ext.(envelop)
+		if !ok {
+			continue
+		}
+		wks = append(wks, env.Works...)
+	}
+	return wks
+}
+
+func WriteInstanceBim4d(doc *gltf.Document, props []map[string]interface{}) error {
+	if len(doc.Nodes) != len(props) {
+		return nil
+	}
+
+	for i, node := range doc.Nodes {
+		info := CreateWorkItem(props[i])
+		AddWorkItemToNode(node, info)
+	}
+	if err := EncodeBIM4dMetadata(doc); err != nil {
+		return err
+	}
+	doc.AddExtensionUsed(ExtensionName)
+	return nil
+}
+
+func WriteBatchModelBim4d(doc *gltf.Document, props []map[string]interface{}) error {
+	var wks []*WorkItem
+	for i := range props {
+		info := CreateWorkItem(props[i])
+		wks = append(wks, info)
+	}
+
+	ext, ok := doc.Extensions[ExtensionName]
+	if !ok {
+		ext = envelop{
+			Version: "1.0",
+			Works:   wks,
+		}
+		doc.Extensions[ExtensionName] = ext
+	}
+
+	env, ok := ext.(envelop)
+	if !ok {
+		return nil
+	}
+
+	env.Works = append(env.Works, wks...)
+	doc.Extensions[ExtensionName] = env
+	if err := EncodeBIM4dMetadata(doc); err != nil {
+		return err
+	}
+
+	doc.AddExtensionUsed(ExtensionName)
 	return nil
 }
