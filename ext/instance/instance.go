@@ -120,16 +120,17 @@ func createVectorAccessor(doc *gltf.Document, data interface{},
 func flattenFloat32Slice(slice interface{}, dim int) []byte {
 	var result []byte
 	buf := bytes.NewBuffer(result)
-	buf.Grow(len(slice.([]float32)) * dim * 4) // 预分配内存
 
 	switch v := slice.(type) {
 	case [][3]float32:
+		buf.Grow(len(slice.([][3]float32)) * dim * 4) // 预分配内存
 		for i := range v {
 			for j := 0; j < 3; j++ {
 				binary.Write(buf, binary.LittleEndian, v[i][j])
 			}
 		}
 	case [][4]float32:
+		buf.Grow(len(slice.([][4]float32)) * dim * 4) // 预分配内存
 		for i := range v {
 			for j := 0; j < 4; j++ {
 				binary.Write(buf, binary.LittleEndian, v[i][j])
@@ -153,6 +154,8 @@ func addBufferView(doc *gltf.Document, data []byte) (uint32, error) {
 
 	buffer.Data = append(buffer.Data, data...)
 	buffer.ByteLength += uint32(len(data))
+	pad := (4 - (buffer.ByteLength % 4)) % 4
+	buffer.Data = append(buffer.Data, make([]byte, pad)...)
 
 	doc.BufferViews = append(doc.BufferViews, view)
 	return uint32(len(doc.BufferViews) - 1), nil

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"reflect"
 	"unicode/utf8"
 
 	extgltf "github.com/flywave/gltf/ext/3dtile/gltf"
@@ -260,7 +261,7 @@ func (e *StructuralMetadataEncoder) encodeProperty(
 ) (*extgltf.PropertyTableProperty, error) {
 	tableProp := &extgltf.PropertyTableProperty{}
 
-	switch values := prop.Values.(type) {
+	switch values := reflect.ValueOf(prop.Values).Interface().(type) {
 	case []string:
 		// 处理字符串数组
 		data, offsets, err := e.encodeStringArray(values)
@@ -367,12 +368,15 @@ func (e *StructuralMetadataEncoder) WriteLegacyFormat(doc *gltf.Document, class 
 
 	for name, values := range props {
 		propType, componentType, _ := inferPropertyType(values)
-		propData = append(propData, PropertyData{
-			Name:          name,
-			ElementType:   propType,
-			ComponentType: *componentType,
-			Values:        values,
-		})
+		p := PropertyData{
+			Name:        name,
+			ElementType: propType,
+			Values:      values,
+		}
+		if componentType != nil {
+			p.ComponentType = *componentType
+		}
+		propData = append(propData, p)
 	}
 
 	// 复用新实现
@@ -683,6 +687,7 @@ func (e *StructuralMetadataEncoder) SaveExtension(doc *gltf.Document, ext *extgl
 		doc.Extensions = make(gltf.Extensions)
 	}
 	doc.Extensions[extgltf.ExtensionName] = extData
+	doc.AddExtensionUsed(extgltf.ExtensionName)
 	return nil
 }
 
@@ -698,13 +703,15 @@ func WriteStructuralMetadata(doc *gltf.Document, class string, propertiesArray [
 		if err != nil {
 			return fmt.Errorf("属性类型推断失败: %w", err)
 		}
-
-		propData = append(propData, PropertyData{
-			Name:          name,
-			ElementType:   propType,
-			ComponentType: *componentType,
-			Values:        values,
-		})
+		p := PropertyData{
+			Name:        name,
+			ElementType: propType,
+			Values:      values,
+		}
+		if componentType != nil {
+			p.ComponentType = *componentType
+		}
+		propData = append(propData, p)
 	}
 
 	// 复用新实现
