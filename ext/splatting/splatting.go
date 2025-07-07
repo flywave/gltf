@@ -195,13 +195,14 @@ func WireGaussianSplatting(
 	coefficients []float32,
 	vertexData *VertexData, // 顶点数据数组
 	config *QuantizationConfig,
+	compress bool,
 ) (*GaussianSplatting, error) {
 	// 创建属性访问器
 	attrs := make(map[string]uint32)
 
 	// 创建位置属性访问器
 	posIdx, err := createAccessor(doc, vertexData.Positions,
-		config.PositionType, gltf.AccessorVec3, false, false)
+		config.PositionType, gltf.AccessorVec3, false, compress)
 	if err != nil {
 		return nil, fmt.Errorf("位置属性创建失败: %w", err)
 	}
@@ -209,7 +210,7 @@ func WireGaussianSplatting(
 
 	// 创建颜色属性访问器
 	colorIdx, err := createAccessor(doc, vertexData.Colors,
-		config.ColorType, gltf.AccessorVec4, config.Normalized, false)
+		config.ColorType, gltf.AccessorVec4, config.Normalized, compress)
 	if err != nil {
 		return nil, fmt.Errorf("颜色属性创建失败: %w", err)
 	}
@@ -217,7 +218,7 @@ func WireGaussianSplatting(
 
 	// 创建缩放属性访问器
 	scaleIdx, err := createAccessor(doc, vertexData.Scales,
-		config.ScaleType, gltf.AccessorVec3, config.Normalized, true)
+		config.ScaleType, gltf.AccessorVec3, config.Normalized, compress)
 	if err != nil {
 		return nil, fmt.Errorf("缩放属性创建失败: %w", err)
 	}
@@ -225,7 +226,7 @@ func WireGaussianSplatting(
 
 	// 创建旋转属性访问器
 	rotIdx, err := createAccessor(doc, vertexData.Rotations,
-		config.RotationType, gltf.AccessorVec4, config.Normalized, true)
+		config.RotationType, gltf.AccessorVec4, config.Normalized, compress)
 
 	if err != nil {
 		return nil, fmt.Errorf("旋转属性创建失败: %w", err)
