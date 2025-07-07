@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"math"
 
 	"github.com/flywave/gltf"
 	"github.com/flywave/gltf/ext/meshopt"
@@ -19,13 +20,8 @@ func init() {
 }
 
 type GaussianSplatting struct {
-	Attributes         map[string]uint32   `json:"attributes"`
-	SphericalHarmonics *SphericalHarmonics `json:"sphericalHarmonics,omitempty"`
-	BufferView         int                 `json:"bufferView,omitempty"`
-}
-
-type SphericalHarmonics struct {
-	Coefficients []float32 `json:"coefficients"`
+	Attributes         map[string]uint32 `json:"attributes"`
+	SphericalHarmonics *uint32           `json:"sphericalHarmonics,omitempty"`
 }
 
 func UnmarshalGaussianSplatting(data []byte) (interface{}, error) {
@@ -34,7 +30,6 @@ func UnmarshalGaussianSplatting(data []byte) (interface{}, error) {
 		return nil, fmt.Errorf("KHR_gaussian_splatting解析失败: %w", err)
 	}
 
-	// 验证必要属性
 	required := map[string]struct{}{
 		"POSITION":  {},
 		"COLOR_0":   {},
@@ -60,95 +55,20 @@ func (g *GaussianSplatting) MarshalJSON() ([]byte, error) {
 	})
 }
 
-// 压缩图元数据到bufferView
-func (g *GaussianSplatting) Compress(doc *gltf.Document, data interface{}) error {
-	buf := new(bytes.Buffer)
-
-	// 支持多种数据类型压缩
-	switch v := data.(type) {
-	case []float32:
-		if err := binary.Write(buf, binary.LittleEndian, v); err != nil {
-			return fmt.Errorf("浮点数据写入失败: %w", err)
-		}
-	case []uint8:
-		if err := binary.Write(buf, binary.LittleEndian, v); err != nil {
-			return fmt.Errorf("字节数据写入失败: %w", err)
-		}
-	case []uint16:
-		if err := binary.Write(buf, binary.LittleEndian, v); err != nil {
-			return fmt.Errorf("短整型数据写入失败: %w", err)
-		}
-	default:
-		return fmt.Errorf("不支持的数据类型: %T", data)
-	}
-
-	// 添加压缩标记并创建bufferView
-	viewIndex, err := addBufferView(doc, buf.Bytes(), true)
-	if err != nil {
-		return fmt.Errorf("创建压缩bufferView失败: %w", err)
-	}
-
-	// 添加必要的扩展声明
-	addExtensionUsed(doc, "KHR_mesh_quantization")
-	addExtensionUsed(doc, "EXT_meshopt_compression")
-
-	g.BufferView = viewIndex
-	return nil
-}
-
-func addExtensionUsed(doc *gltf.Document, ext string) {
-	for _, existing := range doc.ExtensionsUsed {
-		if existing == ext {
-			return
-		}
-	}
-	doc.ExtensionsUsed = append(doc.ExtensionsUsed, ext)
-}
-
-// 添加缓冲区视图辅助函数
-func addBufferView(doc *gltf.Document, data []byte, compress bool) (int, error) {
-	if compress {
-		compressed, err := compressWithMeshopt(data)
-		if err == nil {
-			data = compressed
-			addExtensionUsed(doc, "EXT_meshopt_compression")
-		}
-	}
-	if len(doc.Buffers) == 0 {
-		doc.Buffers = append(doc.Buffers, &gltf.Buffer{})
-	}
-
-	buffer := doc.Buffers[0]
-	buffer.ByteLength += uint32(len(data))
-
-	view := &gltf.BufferView{
-		Buffer:     0,
-		ByteOffset: buffer.ByteLength - uint32(len(data)),
-		ByteLength: uint32(len(data)),
-	}
-
-	doc.BufferViews = append(doc.BufferViews, view)
-	return len(doc.BufferViews) - 1, nil
-}
-
-// 创建高斯泼溅图元扩展
-func CreateGaussianPrimitive(doc *gltf.Document, attributes map[string]uint32, coefficients []float32) (*GaussianSplatting, error) {
+func CreateGaussianPrimitive(doc *gltf.Document, attributes map[string]uint32, shAccessor *uint32) *GaussianSplatting {
 	gs := &GaussianSplatting{
 		Attributes: attributes,
 	}
 
-	if len(coefficients) > 0 {
-		gs.SphericalHarmonics = &SphericalHarmonics{
-			Coefficients: coefficients,
-		}
+	if shAccessor != nil {
+		gs.SphericalHarmonics = shAccessor
 	}
 
-	// 自动添加扩展声明
 	if !hasExtensionUsed(doc, ExtensionName) {
 		doc.ExtensionsUsed = append(doc.ExtensionsUsed, ExtensionName)
 	}
 
-	return gs, nil
+	return gs
 }
 
 func hasExtensionUsed(doc *gltf.Document, ext string) bool {
@@ -160,16 +80,14 @@ func hasExtensionUsed(doc *gltf.Document, ext string) bool {
 	return false
 }
 
-// QuantizationConfig 定义量化配置
 type QuantizationConfig struct {
-	PositionType gltf.ComponentType // 默认FLOAT
-	ColorType    gltf.ComponentType // 推荐UNSIGNED_BYTE
-	RotationType gltf.ComponentType // 推荐SHORT或FLOAT
-	ScaleType    gltf.ComponentType // 推荐UNSIGNED_SHORT
-	Normalized   bool               // 是否启用归一化
+	PositionType gltf.ComponentType
+	ColorType    gltf.ComponentType
+	RotationType gltf.ComponentType
+	ScaleType    gltf.ComponentType
+	Normalized   bool
 }
 
-// DefaultQuantization 返回推荐的量化配置
 func DefaultQuantization() *QuantizationConfig {
 	return &QuantizationConfig{
 		PositionType: gltf.ComponentFloat,
@@ -180,85 +98,97 @@ func DefaultQuantization() *QuantizationConfig {
 	}
 }
 
-// VertexData 定义高斯泼溅顶点数据结构
 type VertexData struct {
-	Positions []float32 `json:"-"` // 位置数据 (x, y, z)
-	Colors    []float32 `json:"-"` // 颜色数据 (r, g, b, a)
-	Scales    []float32 `json:"-"` // 缩放数据 (sx, sy, sz)
-	Rotations []float32 `json:"-"` // 旋转数据 (rx, ry, rz, rw)
+	Positions []float32
+	Colors    []float32
+	Scales    []float32
+	Rotations []float32
 }
 
-// WireGaussianSplatting 创建并关联高斯泼溅图元扩展
 func WireGaussianSplatting(
 	doc *gltf.Document,
-	attributes map[string]uint32,
-	coefficients []float32,
-	vertexData *VertexData, // 顶点数据数组
+	vertexData *VertexData,
+	shCoefficients []float32,
 	config *QuantizationConfig,
+	compress bool,
 ) (*GaussianSplatting, error) {
-	// 创建属性访问器
 	attrs := make(map[string]uint32)
 
-	// 创建位置属性访问器
+	vertexCount := len(vertexData.Positions) / 3
+	if len(vertexData.Colors)/4 != vertexCount ||
+		len(vertexData.Scales)/3 != vertexCount ||
+		len(vertexData.Rotations)/4 != vertexCount {
+		return nil, fmt.Errorf("顶点属性长度不一致")
+	}
+
+	// 添加压缩扩展声明
+	if compress {
+		addExtensionUsed(doc, "EXT_meshopt_compression")
+	}
+
+	// 创建访问器
 	posIdx, err := createAccessor(doc, vertexData.Positions,
-		config.PositionType, gltf.AccessorVec3, false, false)
+		config.PositionType, gltf.AccessorVec3, false, compress, config, "POSITION")
 	if err != nil {
 		return nil, fmt.Errorf("位置属性创建失败: %w", err)
 	}
 	attrs["POSITION"] = posIdx
 
-	// 创建颜色属性访问器
 	colorIdx, err := createAccessor(doc, vertexData.Colors,
-		config.ColorType, gltf.AccessorVec4, config.Normalized, false)
+		config.ColorType, gltf.AccessorVec4, config.Normalized, compress, config, "COLOR_0")
 	if err != nil {
 		return nil, fmt.Errorf("颜色属性创建失败: %w", err)
 	}
 	attrs["COLOR_0"] = colorIdx
 
-	// 创建缩放属性访问器
 	scaleIdx, err := createAccessor(doc, vertexData.Scales,
-		config.ScaleType, gltf.AccessorVec3, config.Normalized, true)
+		config.ScaleType, gltf.AccessorVec3, config.Normalized, compress, config, "_SCALE")
 	if err != nil {
 		return nil, fmt.Errorf("缩放属性创建失败: %w", err)
 	}
 	attrs["_SCALE"] = scaleIdx
 
-	// 创建旋转属性访问器
 	rotIdx, err := createAccessor(doc, vertexData.Rotations,
-		config.RotationType, gltf.AccessorVec4, config.Normalized, true)
-
+		config.RotationType, gltf.AccessorVec4, config.Normalized, compress, config, "_ROTATION")
 	if err != nil {
 		return nil, fmt.Errorf("旋转属性创建失败: %w", err)
 	}
 	attrs["_ROTATION"] = rotIdx
 
-	// 合并顶点数据并压缩
-	mergedData := mergeVertexData(vertexData)
-	gs, err := CreateGaussianPrimitive(doc, attrs, coefficients)
-	if err != nil {
-		return nil, err
+	var shAccessor *uint32
+	if len(shCoefficients) > 0 {
+		idx, err := createAccessor(doc, shCoefficients,
+			gltf.ComponentFloat, gltf.AccessorScalar, false, compress, config, "SH")
+		if err != nil {
+			return nil, fmt.Errorf("球谐系数创建失败: %w", err)
+		}
+		shAccessor = &idx
 	}
 
-	if err := gs.Compress(doc, mergedData); err != nil {
-		return nil, err
-	}
-	// 自动创建图元并关联扩展
+	gs := CreateGaussianPrimitive(doc, attrs, shAccessor)
+
 	primitive := &gltf.Primitive{
-		Attributes: attributes,
+		Attributes: attrs,
 		Extensions: make(gltf.Extensions),
 	}
 	primitive.Extensions[ExtensionName] = gs
 
-	// 确保mesh存在
 	if len(doc.Meshes) == 0 {
 		doc.Meshes = append(doc.Meshes, &gltf.Mesh{})
 	}
 	doc.Meshes[0].Primitives = append(doc.Meshes[0].Primitives, primitive)
 
+	// 添加量化扩展声明
+	if config.PositionType != gltf.ComponentFloat ||
+		config.ColorType != gltf.ComponentFloat ||
+		config.ScaleType != gltf.ComponentFloat ||
+		config.RotationType != gltf.ComponentFloat {
+		addExtensionUsed(doc, "KHR_mesh_quantization")
+	}
+
 	return gs, nil
 }
 
-// 更新createAccessor函数支持量化
 func createAccessor(
 	doc *gltf.Document,
 	data []float32,
@@ -266,95 +196,205 @@ func createAccessor(
 	dataType gltf.AccessorType,
 	normalized bool,
 	compress bool,
+	config *QuantizationConfig,
+	attrName string,
 ) (uint32, error) {
-	buf := new(bytes.Buffer)
+	components := int(dataType.Components())
+	count := len(data) / components
+	if len(data)%components != 0 {
+		return 0, fmt.Errorf("数据长度不匹配访问器类型")
+	}
 
-	// 根据组件类型转换数据
-	switch compType {
-	case gltf.ComponentUbyte:
-		quantized := make([]uint8, len(data))
-		for i, v := range data {
-			quantized[i] = uint8(v * 255) // 归一化到0-255
-		}
-		binary.Write(buf, binary.LittleEndian, quantized)
-	case gltf.ComponentUshort:
-		quantized := make([]uint16, len(data))
-		for i, v := range data {
-			quantized[i] = uint16(v * 65535) // 归一化到0-65535
-		}
-		binary.Write(buf, binary.LittleEndian, quantized)
-	case gltf.ComponentShort:
-		quantized := make([]int16, len(data))
-		// 假设数据在[-1,1]范围
-		for i, v := range data {
-			quantized[i] = int16(v * 32767)
-		}
-		binary.Write(buf, binary.LittleEndian, quantized)
-	default:
-		if err := binary.Write(buf, binary.LittleEndian, data); err != nil {
-			return 0, err
+	buf := new(bytes.Buffer)
+	min := make([]float32, components)
+	max := make([]float32, components)
+
+	// 初始化min/max
+	for i := range min {
+		min[i] = math.MaxFloat32
+		max[i] = -math.MaxFloat32
+	}
+
+	// 特殊处理旋转数据
+	if attrName == "_ROTATION" {
+		for i := range min {
+			min[i] = -1
+			max[i] = 1
 		}
 	}
 
-	bufViewIdx, err := addBufferView(doc, buf.Bytes(), compress)
+	// 第一次遍历计算实际范围（旋转数据除外）
+	if attrName != "_ROTATION" {
+		for i, v := range data {
+			idx := i % components
+			if v < min[idx] {
+				min[idx] = v
+			}
+			if v > max[idx] {
+				max[idx] = v
+			}
+		}
+	}
+
+	// 第二次遍历处理量化
+	for i, v := range data {
+		idx := i % components
+		var quantizedValue float32
+
+		switch attrName {
+		case "_ROTATION":
+			// 旋转数据特殊处理，保持单位四元数
+			quantizedValue = clamp(v, -1, 1)
+		default:
+			if normalized {
+				// 正确归一化公式
+				rangeVal := max[idx] - min[idx]
+				if rangeVal > 0 {
+					quantizedValue = (v - min[idx]) / rangeVal
+				} else {
+					quantizedValue = 0
+				}
+			} else {
+				quantizedValue = v
+			}
+		}
+
+		// 根据类型处理量化
+		switch compType {
+		case gltf.ComponentUbyte:
+			val := uint8(quantizedValue * 255)
+			buf.WriteByte(val)
+		case gltf.ComponentUshort:
+			val := uint16(quantizedValue * 65535)
+			binary.Write(buf, binary.LittleEndian, val)
+		case gltf.ComponentShort:
+			val := int16(quantizedValue * 32767)
+			binary.Write(buf, binary.LittleEndian, val)
+		default:
+			binary.Write(buf, binary.LittleEndian, v)
+		}
+	}
+
+	// 添加缓冲区视图
+	bufViewIdx, err := addBufferView(doc, buf.Bytes(), compress, config)
 	if err != nil {
 		return 0, err
 	}
 
+	// 创建访问器
 	accessor := &gltf.Accessor{
 		BufferView:    gltf.Index(uint32(bufViewIdx)),
 		ComponentType: compType,
-		Count:         uint32(len(data) / int(dataType.Components())),
+		Count:         uint32(count),
 		Type:          dataType,
 		Normalized:    normalized,
+		Min:           min,
+		Max:           max,
 	}
 
 	doc.Accessors = append(doc.Accessors, accessor)
 	return uint32(len(doc.Accessors) - 1), nil
 }
 
-// 添加压缩函数
-func compressWithMeshopt(data []byte) ([]byte, error) {
-	// 假设顶点数据格式为每个顶点包含14个float32（位置3 + 颜色4 + 缩放3 + 旋转4）
-	const floatSize = 4 // float32占4字节
-	const elementsPerVertex = 14
-	byteStride := elementsPerVertex * floatSize
-
-	// 计算顶点数量
-	if len(data)%byteStride != 0 {
-		return nil, fmt.Errorf("invalid data length for vertex compression")
-	}
-	count := uint32(len(data) / byteStride)
-
-	// 调用meshopt压缩（使用ATTRIBUTES模式）
-	compressed, ext, err := meshopt.MeshoptEncode(
-		data,
-		count,
-		uint32(byteStride),
-		meshopt.ModeAttributes,
-		meshopt.FilterNone,
-	)
-
-	if err != nil {
-		return nil, fmt.Errorf("meshopt压缩失败: %w", err)
-	}
-
-	// 这里可以添加扩展信息处理（如果需要）
-	_ = ext // 暂时忽略扩展信息
-
-	return compressed, nil
+func calculateVertexLayout(config *QuantizationConfig) int {
+	size := 0
+	size += 3 * componentSize(config.PositionType)
+	size += 4 * componentSize(config.ColorType)
+	size += 3 * componentSize(config.ScaleType)
+	size += 4 * componentSize(config.RotationType)
+	return size
 }
 
-// 修改WireGaussianSplatting函数中的合并逻辑
-func mergeVertexData(vd *VertexData) []byte {
-	// 创建足够大的缓冲区
-	buf := new(bytes.Buffer)
+func componentSize(ct gltf.ComponentType) int {
+	switch ct {
+	case gltf.ComponentUbyte, gltf.ComponentByte:
+		return 1
+	case gltf.ComponentUshort, gltf.ComponentShort:
+		return 2
+	default: // float
+		return 4
+	}
+}
 
-	// 按原始浮点格式写入
-	binary.Write(buf, binary.LittleEndian, vd.Positions)
-	binary.Write(buf, binary.LittleEndian, vd.Colors)
-	binary.Write(buf, binary.LittleEndian, vd.Scales)
-	binary.Write(buf, binary.LittleEndian, vd.Rotations)
+func addBufferView(doc *gltf.Document, data []byte, compress bool, config *QuantizationConfig) (int, error) {
+	originalData := data
+	if compress {
+		vertexSize := calculateVertexLayout(config)
+		if len(data)%vertexSize != 0 {
+			return 0, fmt.Errorf("数据大小不符合顶点布局")
+		}
+		count := uint32(len(data) / vertexSize)
 
-	return buf.Bytes()
+		compressed, ext, err := meshopt.MeshoptEncode(
+			data,
+			count,
+			uint32(vertexSize),
+			meshopt.ModeAttributes,
+			meshopt.FilterNone,
+		)
+
+		if err != nil {
+			return 0, fmt.Errorf("meshopt压缩失败: %w", err)
+		}
+
+		// 使用压缩后的数据
+		data = compressed
+
+		// 添加压缩扩展
+		ext.Buffer = 0
+		ext.ByteOffset = 0
+		ext.ByteLength = uint32(len(data))
+		ext.ByteStride = uint32(vertexSize)
+		ext.Count = count
+	}
+
+	if len(doc.Buffers) == 0 {
+		doc.Buffers = append(doc.Buffers, &gltf.Buffer{})
+	}
+
+	buffer := doc.Buffers[0]
+	byteOffset := buffer.ByteLength
+	buffer.ByteLength += uint32(len(data))
+
+	view := &gltf.BufferView{
+		Buffer:     0,
+		ByteOffset: byteOffset,
+		ByteLength: uint32(len(data)),
+	}
+
+	// 添加压缩扩展
+	if compress {
+		view.Extensions = make(gltf.Extensions)
+		view.Extensions["EXT_meshopt_compression"] = &meshopt.CompressionExtension{
+			Buffer:     0,
+			ByteOffset: byteOffset,
+			ByteLength: uint32(len(originalData)),
+			ByteStride: uint32(calculateVertexLayout(config)),
+			Count:      uint32(len(originalData)) / uint32(calculateVertexLayout(config)),
+			Mode:       meshopt.ModeAttributes,
+			Filter:     meshopt.FilterNone,
+		}
+	}
+
+	doc.BufferViews = append(doc.BufferViews, view)
+	return len(doc.BufferViews) - 1, nil
+}
+
+func addExtensionUsed(doc *gltf.Document, ext string) {
+	for _, existing := range doc.ExtensionsUsed {
+		if existing == ext {
+			return
+		}
+	}
+	doc.ExtensionsUsed = append(doc.ExtensionsUsed, ext)
+}
+
+func clamp(value, min, max float32) float32 {
+	if value < min {
+		return min
+	}
+	if value > max {
+		return max
+	}
+	return value
 }
