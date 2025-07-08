@@ -487,6 +487,9 @@ func WriteBatchModelBim4d(doc *gltf.Document, props []map[string]interface{}) er
 			Version: "1.0",
 			Works:   wks,
 		}
+		if len(doc.Extensions) == 0 {
+			doc.Extensions = make(map[string]interface{})
+		}
 		doc.Extensions[ExtensionName] = ext
 	}
 
