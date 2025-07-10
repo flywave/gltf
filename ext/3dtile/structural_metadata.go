@@ -513,7 +513,12 @@ func (e *StructuralMetadataEncoder) addBufferView(doc *gltf.Document, data []byt
 
 	// 使用第一个缓冲区
 	buffer := doc.Buffers[0]
+	buffer.Data = append(buffer.Data, data...)
 	buffer.ByteLength += uint32(len(data))
+
+	pad := PaddingByte(int(buffer.ByteLength))
+	buffer.Data = append(buffer.Data, pad...)
+	buffer.ByteLength += uint32(len(pad))
 
 	// 创建缓冲区视图
 	view := &gltf.BufferView{

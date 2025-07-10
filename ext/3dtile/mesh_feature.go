@@ -525,9 +525,17 @@ func (e *MeshFeaturesEncoder) createAccessor(doc *gltf.Document, data interface{
 
 	bufferView := &gltf.BufferView{
 		Buffer:     0,
+		ByteOffset: uint32(len(doc.Buffers[0].Data)),
 		ByteLength: uint32(buf.Len()),
 	}
 	doc.BufferViews = append(doc.BufferViews, bufferView)
+
+	doc.Buffers[0].Data = append(doc.Buffers[0].Data, buf.Bytes()...)
+	doc.Buffers[0].ByteLength += uint32(buf.Len())
+
+	pad := PaddingByte(int(doc.Buffers[0].ByteLength))
+	doc.Buffers[0].Data = append(doc.Buffers[0].Data, pad...)
+	doc.Buffers[0].ByteLength += uint32(len(pad))
 
 	accessor := &gltf.Accessor{
 		BufferView:    gltf.Index(uint32(len(doc.BufferViews) - 1)),
