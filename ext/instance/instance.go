@@ -118,25 +118,14 @@ func createVectorAccessor(doc *gltf.Document, data interface{},
 
 // 直接转换float32切片为字节数组
 func flattenFloat32Slice(slice interface{}, dim int) []byte {
-	var result []byte
-	buf := bytes.NewBuffer(result)
-
+	buf := bytes.NewBuffer(nil)
 	switch v := slice.(type) {
 	case [][3]float32:
-		buf.Grow(len(slice.([][3]float32)) * dim * 4) // 预分配内存
-		for i := range v {
-			for j := 0; j < 3; j++ {
-				binary.Write(buf, binary.LittleEndian, v[i][j])
-			}
-		}
+		buf.Grow(len(v) * dim * 4)
 	case [][4]float32:
-		buf.Grow(len(slice.([][4]float32)) * dim * 4) // 预分配内存
-		for i := range v {
-			for j := 0; j < 4; j++ {
-				binary.Write(buf, binary.LittleEndian, v[i][j])
-			}
-		}
+		buf.Grow(len(v) * dim * 4)
 	}
+	binary.Write(buf, binary.LittleEndian, slice)
 	return buf.Bytes()
 }
 
