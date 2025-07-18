@@ -115,66 +115,95 @@ func ptr[T any](v T) *T {
 }
 
 // inferPropertyType infers the property type
-func inferPropertyType(values interface{}) (extgltf.ClassPropertyType, *extgltf.ClassPropertyComponentType, error) {
+func inferPropertyType(values interface{}) (extgltf.ClassPropertyType, *extgltf.ClassPropertyComponentType, bool, error) {
 	switch v := reflect.ValueOf(values).Index(0).Interface().(type) {
 	case string:
-		return extgltf.ClassPropertyTypeString, nil, nil
+		return extgltf.ClassPropertyTypeString, nil, false, nil
 	case bool:
-		return extgltf.ClassPropertyTypeBoolean, nil, nil
+		return extgltf.ClassPropertyTypeBoolean, nil, false, nil
 	case float32:
-		return extgltf.ClassPropertyTypeScalar, ptr(extgltf.ClassPropertyComponentTypeFloat32), nil
+		return extgltf.ClassPropertyTypeScalar, ptr(extgltf.ClassPropertyComponentTypeFloat32), false, nil
 	case float64:
-		return extgltf.ClassPropertyTypeScalar, ptr(extgltf.ClassPropertyComponentTypeFloat64), nil
+		return extgltf.ClassPropertyTypeScalar, ptr(extgltf.ClassPropertyComponentTypeFloat64), false, nil
 	case int:
-		return extgltf.ClassPropertyTypeScalar, ptr(extgltf.ClassPropertyComponentTypeInt64), nil
+		return extgltf.ClassPropertyTypeScalar, ptr(extgltf.ClassPropertyComponentTypeInt64), false, nil
 	case int8:
-		return extgltf.ClassPropertyTypeScalar, ptr(extgltf.ClassPropertyComponentTypeInt8), nil
+		return extgltf.ClassPropertyTypeScalar, ptr(extgltf.ClassPropertyComponentTypeInt8), false, nil
 	case int16:
-		return extgltf.ClassPropertyTypeScalar, ptr(extgltf.ClassPropertyComponentTypeInt16), nil
+		return extgltf.ClassPropertyTypeScalar, ptr(extgltf.ClassPropertyComponentTypeInt16), false, nil
 	case int32:
-		return extgltf.ClassPropertyTypeScalar, ptr(extgltf.ClassPropertyComponentTypeInt32), nil
+		return extgltf.ClassPropertyTypeScalar, ptr(extgltf.ClassPropertyComponentTypeInt32), false, nil
 	case int64:
-		return extgltf.ClassPropertyTypeScalar, ptr(extgltf.ClassPropertyComponentTypeInt64), nil
+		return extgltf.ClassPropertyTypeScalar, ptr(extgltf.ClassPropertyComponentTypeInt64), false, nil
 	case uint:
-		return extgltf.ClassPropertyTypeScalar, ptr(extgltf.ClassPropertyComponentTypeUint64), nil
+		return extgltf.ClassPropertyTypeScalar, ptr(extgltf.ClassPropertyComponentTypeUint64), false, nil
 	case uint8:
-		return extgltf.ClassPropertyTypeScalar, ptr(extgltf.ClassPropertyComponentTypeUint8), nil
+		return extgltf.ClassPropertyTypeScalar, ptr(extgltf.ClassPropertyComponentTypeUint8), false, nil
 	case uint16:
-		return extgltf.ClassPropertyTypeScalar, ptr(extgltf.ClassPropertyComponentTypeUint16), nil
+		return extgltf.ClassPropertyTypeScalar, ptr(extgltf.ClassPropertyComponentTypeUint16), false, nil
 	case uint32:
-		return extgltf.ClassPropertyTypeScalar, ptr(extgltf.ClassPropertyComponentTypeUint32), nil
+		return extgltf.ClassPropertyTypeScalar, ptr(extgltf.ClassPropertyComponentTypeUint32), false, nil
 	case uint64:
-		return extgltf.ClassPropertyTypeScalar, ptr(extgltf.ClassPropertyComponentTypeUint64), nil
+		return extgltf.ClassPropertyTypeScalar, ptr(extgltf.ClassPropertyComponentTypeUint64), false, nil
+	case []string:
+		return extgltf.ClassPropertyTypeString, nil, true, nil
+	case []bool:
+		return extgltf.ClassPropertyTypeBoolean, nil, true, nil
+
+	case []int:
+		return extgltf.ClassPropertyTypeScalar, ptr(extgltf.ClassPropertyComponentTypeInt64), true, nil
+	case []int8:
+		return extgltf.ClassPropertyTypeScalar, ptr(extgltf.ClassPropertyComponentTypeInt8), true, nil
+	case []int16:
+		return extgltf.ClassPropertyTypeScalar, ptr(extgltf.ClassPropertyComponentTypeInt16), true, nil
+	case []int32:
+		return extgltf.ClassPropertyTypeScalar, ptr(extgltf.ClassPropertyComponentTypeInt32), true, nil
+	case []int64:
+		return extgltf.ClassPropertyTypeScalar, ptr(extgltf.ClassPropertyComponentTypeInt64), true, nil
+	case []uint:
+		return extgltf.ClassPropertyTypeScalar, ptr(extgltf.ClassPropertyComponentTypeUint64), true, nil
+	case []uint8:
+		return extgltf.ClassPropertyTypeScalar, ptr(extgltf.ClassPropertyComponentTypeUint8), true, nil
+	case []uint16:
+		return extgltf.ClassPropertyTypeScalar, ptr(extgltf.ClassPropertyComponentTypeUint16), true, nil
+	case []uint32:
+		return extgltf.ClassPropertyTypeScalar, ptr(extgltf.ClassPropertyComponentTypeUint32), true, nil
+	case []uint64:
+		return extgltf.ClassPropertyTypeScalar, ptr(extgltf.ClassPropertyComponentTypeUint64), true, nil
 	case []float32:
 		switch len(v) {
 		case 2:
-			return extgltf.ClassPropertyTypeVec2, ptr(extgltf.ClassPropertyComponentTypeFloat32), nil
+			return extgltf.ClassPropertyTypeVec2, ptr(extgltf.ClassPropertyComponentTypeFloat32), false, nil
 		case 3:
-			return extgltf.ClassPropertyTypeVec3, ptr(extgltf.ClassPropertyComponentTypeFloat32), nil
+			return extgltf.ClassPropertyTypeVec3, ptr(extgltf.ClassPropertyComponentTypeFloat32), false, nil
 		case 4:
-			return extgltf.ClassPropertyTypeVec4, ptr(extgltf.ClassPropertyComponentTypeFloat32), nil
+			return extgltf.ClassPropertyTypeVec4, ptr(extgltf.ClassPropertyComponentTypeFloat32), false, nil
+		default:
+			return extgltf.ClassPropertyTypeVec4, ptr(extgltf.ClassPropertyComponentTypeFloat32), true, nil
 		}
 	case mat3.T:
-		return extgltf.ClassPropertyTypeMat3, ptr(extgltf.ClassPropertyComponentTypeFloat32), nil
+		return extgltf.ClassPropertyTypeMat3, ptr(extgltf.ClassPropertyComponentTypeFloat32), false, nil
 	case mat4.T:
-		return extgltf.ClassPropertyTypeMat4, ptr(extgltf.ClassPropertyComponentTypeFloat32), nil
+		return extgltf.ClassPropertyTypeMat4, ptr(extgltf.ClassPropertyComponentTypeFloat32), false, nil
 	case mat3d.T:
-		return extgltf.ClassPropertyTypeMat3, ptr(extgltf.ClassPropertyComponentTypeFloat64), nil
+		return extgltf.ClassPropertyTypeMat3, ptr(extgltf.ClassPropertyComponentTypeFloat64), false, nil
 	case mat4d.T:
-		return extgltf.ClassPropertyTypeMat4, ptr(extgltf.ClassPropertyComponentTypeFloat64), nil
+		return extgltf.ClassPropertyTypeMat4, ptr(extgltf.ClassPropertyComponentTypeFloat64), false, nil
 	case []float64:
 		switch len(v) {
 		case 2:
-			return extgltf.ClassPropertyTypeVec2, ptr(extgltf.ClassPropertyComponentTypeFloat64), nil
+			return extgltf.ClassPropertyTypeVec2, ptr(extgltf.ClassPropertyComponentTypeFloat64), false, nil
 		case 3:
-			return extgltf.ClassPropertyTypeVec3, ptr(extgltf.ClassPropertyComponentTypeFloat64), nil
+			return extgltf.ClassPropertyTypeVec3, ptr(extgltf.ClassPropertyComponentTypeFloat64), false, nil
 		case 4:
-			return extgltf.ClassPropertyTypeVec4, ptr(extgltf.ClassPropertyComponentTypeFloat64), nil
+			return extgltf.ClassPropertyTypeVec4, ptr(extgltf.ClassPropertyComponentTypeFloat64), false, nil
+		default:
+			return extgltf.ClassPropertyTypeVec4, ptr(extgltf.ClassPropertyComponentTypeFloat32), true, nil
 		}
 	default:
-		return "", nil, fmt.Errorf("usupported type: %T", v)
+		return "", nil, false, fmt.Errorf("usupported type: %T", v)
 	}
-	return "", nil, fmt.Errorf("unable to infer the type")
+	return "", nil, false, fmt.Errorf("unable to infer the type")
 }
 
 func rackProps(props []map[string]interface{}) map[string]interface{} {

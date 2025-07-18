@@ -351,7 +351,6 @@ func indicesToBytes(indices []uint32, componentType gltf.ComponentType) []byte {
 
 func EncodeAll(doc *gltf.Document, options map[string]interface{}) error {
 	encoder := draco.NewEncoder()
-
 	for _, mesh := range doc.Meshes {
 		for i := range mesh.Primitives {
 			if err := encodePrimitive(doc, encoder, mesh.Primitives[i], options); err != nil {
@@ -359,24 +358,29 @@ func EncodeAll(doc *gltf.Document, options map[string]interface{}) error {
 			}
 		}
 	}
-
 	doc.AddExtensionUsed(ExtensionName)
 	return nil
 }
 
 func encodePrimitive(doc *gltf.Document, encoder *draco.Encoder, primitive *gltf.Primitive, options map[string]interface{}) error {
 	// 1. 收集顶点数据
+	indexAccIdx := primitive.Indices
+	indexAcc := doc.Accessors[*indexAccIdx]
+	faceCOunt := int(indexAcc.Count) / 3
+	indexAcc.BufferView = nil
 	positionAccessor, ok := primitive.Attributes["POSITION"]
 	if !ok {
 		return fmt.Errorf("缺少位置属性")
 	}
 
-	positionData, err := parseAttributeData(doc, doc.Accessors[positionAccessor])
+	posAcc := doc.Accessors[positionAccessor]
+	positionData, err := parseAttributeData(doc, posAcc)
+	posAcc.BufferView = nil
 	if err != nil {
 		return fmt.Errorf("解析位置数据失败: %w", err)
 	}
 
-	vertexCount := len(positionData) / 3
+	vertexCount := int(posAcc.Count)
 	if vertexCount <= 0 {
 		return fmt.Errorf("无效的顶点数量: %d", vertexCount)
 	}
@@ -384,10 +388,13 @@ func encodePrimitive(doc *gltf.Document, encoder *draco.Encoder, primitive *gltf
 	// 2. 创建Draco网格
 	builder := draco.NewMeshBuilder()
 	defer builder.Free()
-	builder.Start(vertexCount)
-
+	builder.Start(faceCOunt)
+	pos := [][3]float32{}
+	for i := 0; i < len(positionData); i += 3 {
+		pos = append(pos, [3]float32{positionData[i], positionData[i+1], positionData[i+2]})
+	}
 	// 2. 添加位置属性
-	builder.SetAttribute(vertexCount, positionData, draco.GAT_POSITION)
+	builder.SetAttribute(faceCOunt, pos, draco.GAT_POSITION)
 
 	// 3. 添加其他属性
 	for name, accessorIdx := range primitive.Attributes {
@@ -398,21 +405,17 @@ func encodePrimitive(doc *gltf.Document, encoder *draco.Encoder, primitive *gltf
 		if attrType == draco.GAT_INVALID {
 			continue
 		}
-		data, err := parseAttributeData(doc, doc.Accessors[accessorIdx])
+		texAcc := doc.Accessors[accessorIdx]
+		data, err := parseAttributeData(doc, texAcc)
+		texAcc.BufferView = nil
 		if err != nil {
 			return fmt.Errorf("解析属性 %s 失败: %w", name, err)
 		}
 
-		builder.SetAttribute(vertexCount, data, attrType)
+		builder.SetAttribute(faceCOunt, data, attrType)
 	}
 
 	mesh := builder.GetMesh()
-
-	// 添加面索引
-	if primitive.Indices != nil {
-		indices := parseIndexData(doc, primitive.Indices) // 新增索引解析
-		mesh.Faces(indices)
-	}
 
 	// 4. 配置编码参数
 	applyEncoderOptions(encoder, options) // 新增选项配置
@@ -426,8 +429,10 @@ func encodePrimitive(doc *gltf.Document, encoder *draco.Encoder, primitive *gltf
 
 	// 5. 创建bufferView存储压缩数据
 	buffer := &gltf.Buffer{
-		Data: encodedData,
+		Data:       encodedData,
+		ByteLength: uint32(len(encodedData)),
 	}
+
 	doc.Buffers = append(doc.Buffers, buffer)
 	bufferIndex := uint32(len(doc.Buffers) - 1)
 
@@ -437,6 +442,10 @@ func encodePrimitive(doc *gltf.Document, encoder *draco.Encoder, primitive *gltf
 	}
 	doc.BufferViews = append(doc.BufferViews, view)
 	viewIndex := uint32(len(doc.BufferViews) - 1)
+
+	pad := paddingByte(int(buffer.ByteLength))
+	buffer.Data = append(buffer.Data, pad...)
+	buffer.ByteLength += uint32(len(pad))
 
 	// 6. 构建扩展对象
 	ext := &DracoExtension{
@@ -459,10 +468,22 @@ func encodePrimitive(doc *gltf.Document, encoder *draco.Encoder, primitive *gltf
 	// 10. 更新图元
 	primitive.Extensions = make(map[string]interface{})
 	primitive.Extensions[ExtensionName] = ext
-	primitive.Indices = nil
-	primitive.Attributes = nil
-
 	return nil
+}
+
+func paddingByte(size int) []byte {
+	padding := size % 4
+	if padding != 0 {
+		padding = 4 - padding
+	}
+	if padding == 0 {
+		return []byte{}
+	}
+	pad := make([]byte, padding)
+	for i := range pad {
+		pad[i] = 0x00
+	}
+	return pad
 }
 
 // 辅助函数：将glTF属性名映射为Draco属性类型
@@ -479,60 +500,6 @@ func dracoAttributeType(name string) draco.GeometryAttrType {
 	default:
 		return draco.GAT_GENERIC
 	}
-}
-
-func parseIndexData(doc *gltf.Document, accessorIdx *uint32) []uint32 {
-	if accessorIdx == nil {
-		return nil
-	}
-
-	accessor := doc.Accessors[*accessorIdx]
-	if accessor.BufferView == nil {
-		return nil
-	}
-
-	viewIdx := uint32(*accessor.BufferView)
-	if viewIdx >= uint32(len(doc.BufferViews)) {
-		return nil
-	}
-
-	view := doc.BufferViews[viewIdx]
-	if view.Buffer >= uint32(len(doc.Buffers)) {
-		return nil
-	}
-
-	buffer := doc.Buffers[view.Buffer]
-	if buffer.Data == nil {
-		return nil
-	}
-
-	start := view.ByteOffset + accessor.ByteOffset
-	end := start + accessor.Count*uint32(gltf.SizeOfComponent(accessor.ComponentType))
-	if end > uint32(len(buffer.Data)) {
-		return nil
-	}
-
-	data := buffer.Data[start:end]
-	count := int(accessor.Count)
-	indices := make([]uint32, count)
-
-	switch accessor.ComponentType {
-	case gltf.ComponentUbyte:
-		for i := 0; i < count; i++ {
-			indices[i] = uint32(data[i])
-		}
-	case gltf.ComponentUshort:
-		for i := 0; i < count; i++ {
-			indices[i] = uint32(binary.LittleEndian.Uint16(data[i*2:]))
-		}
-	case gltf.ComponentUint:
-		for i := 0; i < count; i++ {
-			indices[i] = binary.LittleEndian.Uint32(data[i*4:])
-		}
-	default:
-		return nil
-	}
-	return indices
 }
 
 func parseAttributeData(doc *gltf.Document, accessor *gltf.Accessor) ([]float32, error) {

@@ -367,7 +367,7 @@ func (e *StructuralMetadataEncoder) WriteLegacyFormat(doc *gltf.Document, class 
 	propData := make([]PropertyData, 0, len(props))
 
 	for name, values := range props {
-		propType, componentType, _ := inferPropertyType(values)
+		propType, componentType, _, _ := inferPropertyType(values)
 		p := PropertyData{
 			Name:        name,
 			ElementType: propType,
@@ -704,7 +704,7 @@ func WriteStructuralMetadata(doc *gltf.Document, class string, propertiesArray [
 	propData := make([]PropertyData, 0, len(props))
 
 	for name, values := range props {
-		propType, componentType, err := inferPropertyType(values)
+		propType, componentType, _, err := inferPropertyType(values)
 		if err != nil {
 			return fmt.Errorf("属性类型推断失败: %w", err)
 		}
