@@ -72,14 +72,10 @@ type PropertyData struct {
 // AddPropertyTable 添加属性表到GLTF文档
 func (e *StructuralMetadataEncoder) AddPropertyTable(
 	doc *gltf.Document,
+	ext *extgltf.ExtStructuralMetadata,
 	classID string,
 	properties []PropertyData,
 ) (int, error) {
-	// 获取或创建扩展
-	ext, err := e.getOrCreateExtension(doc)
-	if err != nil {
-		return -1, err
-	}
 
 	// 创建或更新schema
 	ext.Schema = e.createSchema(classID, properties, ext.Schema)
@@ -249,6 +245,34 @@ func (e *StructuralMetadataEncoder) getValueCount(values interface{}) int {
 		return len(v)
 	case []bool:
 		return len(v)
+	case [][]string:
+		return len(v)
+	case [][]float64:
+		return len(v)
+	case [][]float32:
+		return len(v)
+	case [][]int:
+		return len(v)
+	case [][]int8:
+		return len(v)
+	case [][]int16:
+		return len(v)
+	case [][]int32:
+		return len(v)
+	case [][]int64:
+		return len(v)
+	case [][]uint:
+		return len(v)
+	case [][]uint8:
+		return len(v)
+	case [][]uint16:
+		return len(v)
+	case [][]uint32:
+		return len(v)
+	case [][]uint64:
+		return len(v)
+	case [][]bool:
+		return len(v)
 	default:
 		return 0
 	}
@@ -284,7 +308,37 @@ func (e *StructuralMetadataEncoder) encodeProperty(
 		tableProp.StringOffsets = new(uint32)
 		*tableProp.StringOffsets = uint32(offsetsIndex)
 		tableProp.StringOffsetType = extgltf.OffsetTypeUint32
+	case [][]string:
+		// 处理字符串数组
+		data, innerOffsets, outerOffset, err := e.encodeStringMatrix(values)
+		if err != nil {
+			return nil, err
+		}
 
+		// 添加值缓冲区视图
+		valuesIndex, err := e.addBufferView(doc, data)
+		if err != nil {
+			return nil, err
+		}
+		tableProp.Values = uint32(valuesIndex)
+
+		// 添加偏移量缓冲区视图
+		innerOffsetsIndex, err := e.addBufferView(doc, innerOffsets)
+		if err != nil {
+			return nil, err
+		}
+		tableProp.StringOffsets = new(uint32)
+		*tableProp.StringOffsets = uint32(innerOffsetsIndex)
+		tableProp.StringOffsetType = extgltf.OffsetTypeUint32
+
+		outOffsetsIndex, err := e.addBufferView(doc, outerOffset)
+		if err != nil {
+			return nil, err
+		}
+
+		tableProp.ArrayOffsets = new(uint32)
+		*tableProp.ArrayOffsets = uint32(outOffsetsIndex)
+		tableProp.ArrayOffsetType = extgltf.OffsetTypeUint32
 	case []bool:
 		// 处理布尔数组
 		data := e.encodeBoolArray(values)
@@ -343,6 +397,60 @@ func (e *StructuralMetadataEncoder) encodeStringArray(values []string) ([]byte, 
 	return dataBuffer, offsetBuffer, nil
 }
 
+func (e *StructuralMetadataEncoder) encodeStringMatrix(matrix [][]string) ([]byte, []byte, []byte, error) {
+	// 1. 验证所有字符串并计算总大小
+	totalStringsSize := 0
+	totalInnerOffsets := 0
+	for _, arr := range matrix {
+		for _, s := range arr {
+			if !utf8.ValidString(s) {
+				return nil, nil, nil, fmt.Errorf("invalid UTF-8 string: %q", s)
+			}
+			totalStringsSize += len(s)
+		}
+		totalInnerOffsets += len(arr) + 1 // 每个内层数组需要 len(arr)+1 个偏移量
+	}
+
+	// 2. 分配缓冲区
+	dataBuffer := make([]byte, totalStringsSize)
+	innerOffsetsBuffer := make([]byte, totalInnerOffsets*4)
+	outerOffsetsBuffer := make([]byte, (len(matrix)+1)*4)
+
+	// 3. 填充数据
+	stringPos := 0
+	innerOffsetPos := 0
+	outerOffsetPos := 0
+
+	for _, arr := range matrix {
+		// 记录外层偏移（指向内层偏移量数组）
+		binary.LittleEndian.PutUint32(outerOffsetsBuffer[outerOffsetPos:], uint32(innerOffsetPos/4))
+		outerOffsetPos += 4
+
+		// 处理内层数组
+		currentStringPos := stringPos
+
+		for _, s := range arr {
+			// 记录内层偏移
+			binary.LittleEndian.PutUint32(innerOffsetsBuffer[innerOffsetPos:], uint32(currentStringPos))
+			innerOffsetPos += 4
+
+			// 复制字符串数据
+			copy(dataBuffer[currentStringPos:], s)
+			currentStringPos += len(s)
+		}
+
+		// 内层数组结束标记
+		binary.LittleEndian.PutUint32(innerOffsetsBuffer[innerOffsetPos:], uint32(currentStringPos))
+		innerOffsetPos += 4
+		stringPos = currentStringPos
+	}
+
+	// 外层数组结束标记
+	binary.LittleEndian.PutUint32(outerOffsetsBuffer[outerOffsetPos:], uint32(innerOffsetPos/4))
+
+	return dataBuffer, innerOffsetsBuffer, outerOffsetsBuffer, nil
+}
+
 // encodeBoolArray 编码布尔数组
 func (e *StructuralMetadataEncoder) encodeBoolArray(values []bool) []byte {
 	// 每字节存储8个布尔值
@@ -378,9 +486,12 @@ func (e *StructuralMetadataEncoder) WriteLegacyFormat(doc *gltf.Document, class 
 		}
 		propData = append(propData, p)
 	}
-
+	ext, err := e.getOrCreateExtension(doc)
+	if err != nil {
+		return err
+	}
 	// 复用新实现
-	_, err := e.AddPropertyTable(doc, class, propData)
+	_, err = e.AddPropertyTable(doc, ext, class, propData)
 	return err
 }
 
@@ -718,13 +829,17 @@ func WriteStructuralMetadata(doc *gltf.Document, class string, propertiesArray [
 		}
 		propData = append(propData, p)
 	}
+	ext, err := encoder.getOrCreateExtension(doc)
+	if err != nil {
+		return fmt.Errorf("获取扩展失败: %w", err)
+	}
 
 	// 复用新实现
-	if _, err := encoder.AddPropertyTable(doc, class, propData); err != nil {
+	if _, err := encoder.AddPropertyTable(doc, ext, class, propData); err != nil {
 		return fmt.Errorf("创建属性表失败: %w", err)
 	}
 	// 获取最新的扩展数据
-	ext, err := encoder.getOrCreateExtension(doc)
+	ext, err = encoder.getOrCreateExtension(doc)
 	if err != nil {
 		return fmt.Errorf("获取扩展失败: %w", err)
 	}

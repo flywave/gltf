@@ -575,7 +575,7 @@ func (e *MeshFeaturesEncoder) createPropertyTable(
 	}
 
 	// 复用已有实现
-	tableIndex, err := e.metaEncoder.AddPropertyTable(doc, class, propData)
+	tableIndex, err := e.metaEncoder.AddPropertyTable(doc, metadata, class, propData)
 	if err != nil {
 		return 0, fmt.Errorf("create property table via meta encoder: %w", err)
 	}
