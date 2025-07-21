@@ -91,7 +91,7 @@ func decodeBufferView(doc *gltf.Document, bufView *gltf.BufferView) error {
 	srcData := srcBuffer.Data[ext.ByteOffset : ext.ByteOffset+ext.ByteLength]
 
 	// 调用meshopt解码库
-	dstData, err := meshoptDecode(
+	dstData, err := MeshoptDecode(
 		ext.Count,
 		ext.ByteStride,
 		srcData,
@@ -111,73 +111,6 @@ func decodeBufferView(doc *gltf.Document, bufView *gltf.BufferView) error {
 	copy(dstBuffer.Data[bufView.ByteOffset:], dstData)
 	delete(bufView.Extensions, ExtensionName)
 	return nil
-}
-
-func meshoptDecode(count uint32, stride uint32, data []byte, mode CompressionMode, filter CompressionFilter) ([]byte, error) {
-	// 验证输入参数有效性
-	if count == 0 {
-		return nil, errors.New("无效的count值")
-	}
-	if stride == 0 {
-		return nil, errors.New("无效的stride值")
-	}
-
-	expectedSize := int(count) * int(stride)
-	if expectedSize <= 0 {
-		return nil, fmt.Errorf("无效的缓冲区大小计算 count:%d stride:%d", count, stride)
-	}
-
-	dst := make([]byte, expectedSize)
-
-	var err error
-	switch mode {
-	case ModeAttributes:
-		err = meshopt.DecompressVertexStream(
-			dst,
-			int(count),
-			int(stride),
-			data,
-		)
-	case ModeTriangles, ModeIndices:
-		strideInt := int(stride)
-		if strideInt != 2 && strideInt != 4 {
-			return nil, errors.New("invalid stride for index decompression")
-		}
-
-		if mode == ModeTriangles {
-			err = meshopt.DecompressIndexStream(
-				dst,
-				int(count),
-				strideInt,
-				data,
-			)
-		} else {
-			err = meshopt.DecompressIndexSequence(
-				dst,
-				int(count),
-				strideInt,
-				data,
-			)
-		}
-	default:
-		return nil, fmt.Errorf("unsupported compression mode: %s", mode)
-	}
-
-	if err != nil {
-		return nil, fmt.Errorf("解压失败: %w", err)
-	}
-
-	// 验证输出数据完整性
-	if len(dst) != expectedSize {
-		return nil, fmt.Errorf("解压数据大小不匹配 预期:%d 实际:%d",
-			expectedSize, len(dst))
-	}
-
-	// 应用后处理过滤器
-	if filter != FilterNone {
-		return decodeBufferViewWithFilter(dst, filter, stride)
-	}
-	return dst, nil
 }
 
 func MeshoptEncode(
@@ -322,4 +255,72 @@ func bytesToFloat32(b []byte) []float32 {
 		floatSlice[i] = *(*float32)(unsafe.Pointer(&b[i*4]))
 	}
 	return floatSlice
+}
+
+func MeshoptDecode(count uint32, stride uint32, data []byte, mode CompressionMode, filter CompressionFilter) ([]byte, error) {
+	// 验证输入参数有效性
+	if count == 0 {
+		return nil, errors.New("无效的count值")
+	}
+	if stride == 0 {
+		return nil, errors.New("无效的stride值")
+	}
+
+	expectedSize := int(count) * int(stride)
+	if expectedSize <= 0 {
+		return nil, fmt.Errorf("无效的缓冲区大小计算 count:%d stride:%d", count, stride)
+	}
+
+	dst := make([]byte, expectedSize)
+
+	var err error
+	switch mode {
+	case ModeAttributes:
+		err = meshopt.DecompressVertexStream(
+			dst,
+			int(count),
+			int(stride),
+			data,
+		)
+	case ModeTriangles:
+		strideInt := int(stride)
+		if strideInt != 2 && strideInt != 4 {
+			return nil, errors.New("invalid stride for index decompression")
+		}
+		err = meshopt.DecompressIndexStream(
+			dst,
+			int(count),
+			strideInt,
+			data,
+		)
+	case ModeIndices:
+		strideInt := int(stride)
+		if strideInt != 2 && strideInt != 4 {
+			return nil, errors.New("invalid stride for index sequence decompression")
+		}
+		err = meshopt.DecompressIndexSequence(
+			dst,
+			int(count),
+			strideInt,
+			data,
+		)
+	default:
+		return nil, fmt.Errorf("unsupported compression mode: %s", mode)
+	}
+
+	if err != nil {
+		return nil, fmt.Errorf("解压失败: %w", err)
+	}
+
+	// 验证输出数据完整性
+	if len(dst) != expectedSize {
+		return nil, fmt.Errorf("解压数据大小不匹配 预期:%d 实际:%d",
+			expectedSize, len(dst))
+	}
+
+	// 应用后处理过滤器
+	if filter != FilterNone {
+		return decodeBufferViewWithFilter(dst, filter, stride)
+	}
+	return dst, nil
 }

@@ -496,3 +496,325 @@ func clamp(value, min, max float32) float32 {
 	}
 	return value
 }
+
+// ReadGaussianSplatting 从glTF文档中读取高斯泼溅数据
+func ReadGaussianSplatting(doc *gltf.Document, primitive *gltf.Primitive) (*VertexData, []float32, error) {
+	// 检查扩展是否存在
+	ext, exists := primitive.Extensions[ExtensionName]
+	if !exists {
+		return nil, nil, fmt.Errorf("primitive does not have KHR_gaussian_splatting extension")
+	}
+
+	// 将扩展解析为GaussianSplatting结构
+	gs, ok := ext.(*GaussianSplatting)
+	if !ok {
+		return nil, nil, fmt.Errorf("invalid KHR_gaussian_splatting extension")
+	}
+
+	// 读取各个属性
+	vertexData := &VertexData{}
+	var err error
+
+	// 读取位置
+	if posAccIdx, ok := gs.Attributes["POSITION"]; ok {
+		vertexData.Positions, err = readAccessorAsFloat32(doc, int(posAccIdx))
+		if err != nil {
+			return nil, nil, fmt.Errorf("读取位置数据失败: %w", err)
+		}
+	} else {
+		return nil, nil, fmt.Errorf("missing POSITION attribute")
+	}
+
+	// 读取颜色
+	if colorAccIdx, ok := gs.Attributes["COLOR_0"]; ok {
+		vertexData.Colors, err = readAccessorAsFloat32(doc, int(colorAccIdx))
+		if err != nil {
+			return nil, nil, fmt.Errorf("读取颜色数据失败: %w", err)
+		}
+	} else {
+		return nil, nil, fmt.Errorf("missing COLOR_0 attribute")
+	}
+
+	// 读取缩放
+	if scaleAccIdx, ok := gs.Attributes["_SCALE"]; ok {
+		vertexData.Scales, err = readAccessorAsFloat32(doc, int(scaleAccIdx))
+		if err != nil {
+			return nil, nil, fmt.Errorf("读取缩放数据失败: %w", err)
+		}
+		// 恢复缩放原始范围
+		if scaleAccessor := doc.Accessors[scaleAccIdx]; scaleAccessor.Normalized {
+			restoreOriginalRange(vertexData.Scales, scaleAccessor.Min, scaleAccessor.Max, 3)
+		}
+	} else {
+		return nil, nil, fmt.Errorf("missing _SCALE attribute")
+	}
+
+	// 读取旋转
+	if rotAccIdx, ok := gs.Attributes["_ROTATION"]; ok {
+		vertexData.Rotations, err = readAccessorAsFloat32(doc, int(rotAccIdx))
+		if err != nil {
+			return nil, nil, fmt.Errorf("读取旋转数据失败: %w", err)
+		}
+	} else {
+		return nil, nil, fmt.Errorf("missing _ROTATION attribute")
+	}
+
+	// 验证属性长度一致性
+	vertexCount := len(vertexData.Positions) / 3
+	if len(vertexData.Colors)/4 != vertexCount ||
+		len(vertexData.Scales)/3 != vertexCount ||
+		len(vertexData.Rotations)/4 != vertexCount {
+		return nil, nil, fmt.Errorf("顶点属性长度不一致")
+	}
+
+	// 读取球谐系数（如果有）
+	var shCoeffs []float32
+	if gs.SphericalHarmonics != nil {
+		shCoeffs, err = readAccessorAsFloat32(doc, int(*gs.SphericalHarmonics))
+		if err != nil {
+			return nil, nil, fmt.Errorf("读取球谐系数失败: %w", err)
+		}
+	}
+
+	// 对数据进行逆处理
+	invertSplatData(vertexData)
+
+	return vertexData, shCoeffs, nil
+}
+
+// readAccessorAsFloat32 从访问器中读取数据并转换为float32切片
+func readAccessorAsFloat32(doc *gltf.Document, accessorIndex int) ([]float32, error) {
+	if accessorIndex < 0 || accessorIndex >= len(doc.Accessors) {
+		return nil, fmt.Errorf("无效的访问器索引: %d", accessorIndex)
+	}
+	accessor := doc.Accessors[accessorIndex]
+
+	// 获取缓冲视图和缓冲区数据
+	bv, buffer, err := getBufferData(doc, accessor)
+	if err != nil {
+		return nil, err
+	}
+
+	// 计算访问器参数
+	componentCount := accessor.Type.Components()
+	componentSize := gltf.SizeOfComponent(accessor.ComponentType)
+	stride := calculateStride(bv, componentSize, int(componentCount))
+
+	// 预分配结果数组
+	data := make([]float32, accessor.Count*uint32(componentCount))
+
+	// 批量读取数据
+	if err := batchReadComponents(
+		buffer.Data,
+		bv.ByteOffset+accessor.ByteOffset,
+		stride,
+		accessor.ComponentType,
+		accessor.Normalized,
+		int(componentCount),
+		accessor.Count,
+		data,
+	); err != nil {
+		return nil, err
+	}
+
+	return data, nil
+}
+
+// 辅助函数：获取缓冲视图和缓冲区数据（添加解压支持）
+func getBufferData(doc *gltf.Document, accessor *gltf.Accessor) (*gltf.BufferView, *gltf.Buffer, error) {
+	if accessor.BufferView == nil {
+		return nil, nil, fmt.Errorf("访问器缺少缓冲视图")
+	}
+	bvIndex := *accessor.BufferView
+	if int(bvIndex) >= len(doc.BufferViews) {
+		return nil, nil, fmt.Errorf("缓冲视图索引越界")
+	}
+	bv := doc.BufferViews[bvIndex]
+
+	if int(bv.Buffer) >= len(doc.Buffers) {
+		return nil, nil, fmt.Errorf("缓冲区索引越界")
+	}
+	buffer := doc.Buffers[bv.Buffer]
+
+	// 处理meshopt压缩扩展
+	if ext, ok := bv.Extensions["EXT_meshopt_compression"].(*meshopt.CompressionExtension); ok {
+		if ext == nil {
+			return nil, nil, fmt.Errorf("无效的EXT_meshopt_compression扩展")
+		}
+
+		// 获取原始压缩数据
+		compressedData := buffer.Data[ext.ByteOffset : ext.ByteOffset+ext.ByteLength]
+
+		// 解码数据
+		decoded, err := meshopt.MeshoptDecode(
+			uint32(ext.Count),
+			uint32(ext.ByteStride),
+			compressedData,
+			meshopt.ModeAttributes,
+			meshopt.FilterNone,
+		)
+		if err != nil {
+			return nil, nil, fmt.Errorf("meshopt解压失败: %w", err)
+		}
+
+		// 创建临时缓冲区存放解压后的数据
+		bvCopy := *bv
+		bufferCopy := *buffer
+		bufferCopy.Data = decoded
+		bvCopy.Buffer = uint32(len(doc.Buffers))
+		doc.Buffers = append(doc.Buffers, &bufferCopy)
+
+		return &bvCopy, &bufferCopy, nil
+	}
+
+	return bv, buffer, nil
+}
+
+// 辅助函数：计算有效步长
+func calculateStride(bv *gltf.BufferView, componentSize, componentCount int) uint32 {
+	if bv.ByteStride > 0 {
+		return bv.ByteStride
+	}
+	return uint32(componentSize * componentCount)
+}
+
+// 辅助函数：批量读取组件数据
+func batchReadComponents(
+	buffer []byte,
+	startOffset uint32,
+	stride uint32,
+	compType gltf.ComponentType,
+	normalized bool,
+	componentCount int,
+	count uint32,
+	out []float32,
+) error {
+	totalComponents := int(count) * componentCount
+
+	// 根据组件类型选择处理方式
+	switch compType {
+	case gltf.ComponentFloat:
+		if err := binary.Read(bytes.NewReader(buffer[startOffset:]), binary.LittleEndian, out); err != nil {
+			return fmt.Errorf("浮点数据读取失败: %w", err)
+		}
+
+	case gltf.ComponentUbyte, gltf.ComponentByte:
+		processByteComponents(buffer, startOffset, stride, compType, normalized, componentCount, count, out)
+
+	case gltf.ComponentUshort, gltf.ComponentShort:
+		processShortComponents(buffer, startOffset, stride, compType, normalized, componentCount, count, out)
+
+	default:
+		return fmt.Errorf("不支持的组件类型: %d", compType)
+	}
+
+	// 验证输出长度
+	if len(out) != totalComponents {
+		return fmt.Errorf("数据长度不匹配，预期 %d 实际 %d", totalComponents, len(out))
+	}
+
+	return nil
+}
+
+// 处理字节类型组件 (优化内存访问模式)
+func processByteComponents(buffer []byte, start uint32, stride uint32, compType gltf.ComponentType, normalized bool, compCount int, count uint32, out []float32) {
+	divisor := float32(1.0)
+	if normalized {
+		divisor = 255.0
+		if compType == gltf.ComponentByte {
+			divisor = 127.0
+		}
+	}
+
+	for i := uint32(0); i < count; i++ {
+		offset := start + i*stride
+		for c := 0; c < compCount; c++ {
+			idx := i*uint32(compCount) + uint32(c)
+			if compType == gltf.ComponentByte {
+				out[idx] = float32(int8(buffer[offset+uint32(c)])) / divisor
+			} else {
+				out[idx] = float32(buffer[offset+uint32(c)]) / divisor
+			}
+		}
+	}
+}
+
+// 处理短整型组件 (使用批量转换)
+func processShortComponents(buffer []byte, start uint32, stride uint32, compType gltf.ComponentType, normalized bool, compCount int, count uint32, out []float32) {
+	divisor := float32(1.0)
+	if normalized {
+		divisor = 65535.0
+		if compType == gltf.ComponentShort {
+			divisor = 32767.0
+		}
+	}
+
+	// 预计算所有short值
+	shorts := make([]int16, count*uint32(compCount))
+	// 修复：将 startOffset 改为函数参数中的 start
+	if err := binary.Read(bytes.NewReader(buffer[start:]), binary.LittleEndian, shorts); err == nil {
+		for i, v := range shorts {
+			out[i] = float32(v) / divisor
+		}
+		return
+	}
+
+	// 回退逐元素处理
+	for i := uint32(0); i < count; i++ {
+		offset := start + i*stride
+		for c := 0; c < compCount; c++ {
+			idx := i*uint32(compCount) + uint32(c)
+			byteOffset := offset + uint32(c*2)
+			val := int16(binary.LittleEndian.Uint16(buffer[byteOffset:]))
+			out[idx] = float32(val) / divisor
+		}
+	}
+}
+
+// invertSplatData 对读取的高斯泼溅数据进行逆处理
+func invertSplatData(data *VertexData) {
+	// 1. 颜色逆处理
+	for i := 0; i < len(data.Colors); i += 4 {
+		// RGB分量除以SH0
+		data.Colors[i+0] /= SH0
+		data.Colors[i+1] /= SH0
+		data.Colors[i+2] /= SH0
+
+		// 不透明度逆处理 (logit函数)
+		opacity := data.Colors[i+3]
+		if opacity <= 0 {
+			opacity = 1e-6
+		} else if opacity >= 1 {
+			opacity = 1 - 1e-6
+		}
+		data.Colors[i+3] = float32(math.Log(float64(opacity / (1 - opacity))))
+	}
+
+	// 2. 缩放逆处理 (对数)
+	for i := 0; i < len(data.Scales); i++ {
+		if data.Scales[i] <= 0 {
+			data.Scales[i] = 1e-6
+		}
+		data.Scales[i] = float32(math.Log(float64(data.Scales[i])))
+	}
+
+	// 3. 旋转数据已经是单位四元数，不需要逆处理
+}
+
+// 范围恢复函数
+func restoreOriginalRange(data []float32, min64, max64 []float32, compCount int) {
+	min := make([]float32, len(min64))
+	max := make([]float32, len(max64))
+	for i := range min64 {
+		min[i] = float32(min64[i])
+		max[i] = float32(max64[i])
+	}
+
+	for i := 0; i < len(data); i += compCount {
+		for j := 0; j < compCount; j++ {
+			idx := i + j
+			rng := max[j] - min[j]
+			data[idx] = data[idx]*rng + min[j]
+		}
+	}
+}

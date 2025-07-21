@@ -62,9 +62,10 @@ func (t *TextureTranform) MarshalJSON() ([]byte, error) {
 	type alias TextureTranform
 	out, err := json.Marshal(&struct{ *alias }{alias: (*alias)(t)})
 	if err == nil {
-		if t.Scale == DefaultScale {
+		switch t.Scale {
+		case DefaultScale:
 			out = removeProperty([]byte(`"scale":[1,1]`), out)
-		} else if t.Scale == emptyScale {
+		case emptyScale:
 			out = removeProperty([]byte(`"scale":[0,0]`), out)
 		}
 		if t.Offset == emptyOffset {
