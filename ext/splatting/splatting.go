@@ -103,7 +103,7 @@ func DefaultQuantization() *QuantizationConfig {
 		PositionType: gltf.ComponentFloat,
 		ColorType:    gltf.ComponentUbyte,
 		RotationType: gltf.ComponentShort,
-		ScaleType:    gltf.ComponentUshort,
+		ScaleType:    gltf.ComponentFloat, // 改为浮点型以保持精度
 		Normalized:   true,
 	}
 }
@@ -125,12 +125,22 @@ func PrepareSplatData(data *VertexData) {
 		data.Colors[i+2] *= SH0
 
 		// 2. 不透明度处理 (sigmoid 激活)
-		data.Colors[i+3] = 1 / (1 + float32(math.Exp(-float64(data.Colors[i+3]))))
+		// 添加安全保护，防止无效数学运算
+		if !math.IsNaN(float64(data.Colors[i+3])) && !math.IsInf(float64(data.Colors[i+3]), 0) {
+			data.Colors[i+3] = 1 / (1 + float32(math.Exp(-float64(data.Colors[i+3]))))
+		} else {
+			data.Colors[i+3] = 0.5 // 默认值
+		}
 	}
 
 	// 3. 缩放处理 (指数激活)
 	for i := 0; i < len(data.Scales); i++ {
-		data.Scales[i] = float32(math.Exp(float64(data.Scales[i])))
+		// 添加安全保护
+		if !math.IsNaN(float64(data.Scales[i])) && !math.IsInf(float64(data.Scales[i]), 0) {
+			data.Scales[i] = float32(math.Exp(float64(data.Scales[i])))
+		} else {
+			data.Scales[i] = 1.0 // 默认值
+		}
 	}
 
 	// 4. 增强旋转归一化
@@ -154,6 +164,17 @@ func PrepareSplatData(data *VertexData) {
 		q[2] = float32(math.Round(float64(q[2]*lenInv)*1e6) / 1e6)
 		q[3] = float32(math.Round(float64(q[3]*lenInv)*1e6) / 1e6)
 	}
+}
+
+// clamp 确保值在指定范围内
+func clamp(v, min, max float32) float32 {
+	if v < min {
+		return min
+	}
+	if v > max {
+		return max
+	}
+	return v
 }
 
 // ValidateRotation 验证旋转数据是否为单位四元数
@@ -214,6 +235,21 @@ func WireGaussianSplatting(
 		addExtensionUsed(doc, "EXT_meshopt_compression")
 	}
 
+	// 计算缩放范围（每个分量）
+	scaleMins := [3]float32{math.MaxFloat32, math.MaxFloat32, math.MaxFloat32}
+	scaleMaxs := [3]float32{-math.MaxFloat32, -math.MaxFloat32, -math.MaxFloat32}
+	for i := 0; i < len(vertexData.Scales); i += 3 {
+		for j := 0; j < 3; j++ {
+			val := vertexData.Scales[i+j]
+			if val < scaleMins[j] {
+				scaleMins[j] = val
+			}
+			if val > scaleMaxs[j] {
+				scaleMaxs[j] = val
+			}
+		}
+	}
+
 	// 定义属性布局
 	attributes := []struct {
 		name       string
@@ -221,11 +257,12 @@ func WireGaussianSplatting(
 		compType   gltf.ComponentType
 		dataType   gltf.AccessorType
 		normalized bool
+		min, max   []float32 // 缩放范围
 	}{
-		{"POSITION", vertexData.Positions, config.PositionType, gltf.AccessorVec3, config.Normalized},
-		{"COLOR_0", vertexData.Colors, config.ColorType, gltf.AccessorVec4, config.Normalized},
-		{"_SCALE", vertexData.Scales, config.ScaleType, gltf.AccessorVec3, config.Normalized},
-		{"_ROTATION", vertexData.Rotations, config.RotationType, gltf.AccessorVec4, config.Normalized},
+		{"POSITION", vertexData.Positions, config.PositionType, gltf.AccessorVec3, config.Normalized, nil, nil},
+		{"COLOR_0", vertexData.Colors, config.ColorType, gltf.AccessorVec4, config.Normalized, nil, nil},
+		{"_SCALE", vertexData.Scales, config.ScaleType, gltf.AccessorVec3, config.Normalized, scaleMins[:], scaleMaxs[:]},
+		{"_ROTATION", vertexData.Rotations, config.RotationType, gltf.AccessorVec4, config.Normalized, nil, nil},
 	}
 
 	// 计算每个属性的大小和步长
@@ -247,14 +284,21 @@ func WireGaussianSplatting(
 	maxs := make(map[string][]float32)
 	for _, attr := range attributes {
 		comps := attr.dataType.Components()
-		mins[attr.name] = make([]float32, comps)
-		maxs[attr.name] = make([]float32, comps)
-		for i := range mins[attr.name] {
-			mins[attr.name][i] = math.MaxFloat32
-			maxs[attr.name][i] = -math.MaxFloat32
-			if attr.name == "_ROTATION" {
-				mins[attr.name][i] = -1
-				maxs[attr.name][i] = 1
+		if attr.min != nil {
+			// 使用预定义的范围
+			mins[attr.name] = attr.min
+			maxs[attr.name] = attr.max
+		} else {
+			// 自动计算范围
+			mins[attr.name] = make([]float32, comps)
+			maxs[attr.name] = make([]float32, comps)
+			for i := range mins[attr.name] {
+				mins[attr.name][i] = math.MaxFloat32
+				maxs[attr.name][i] = -math.MaxFloat32
+				if attr.name == "_ROTATION" {
+					mins[attr.name][i] = -1
+					maxs[attr.name][i] = 1
+				}
 			}
 		}
 	}
@@ -271,30 +315,29 @@ func WireGaussianSplatting(
 				// 处理旋转数据（先执行）
 				if attr.name == "_ROTATION" {
 					// 确保值在[-1, 1]范围内
-					if val < -1 {
-						val = -1
-					} else if val > 1 {
-						val = 1
-					}
+					val = clamp(val, -1, 1)
 				}
 
-				// 处理归一化（旋转属性也需要）
-				if attr.normalized {
+				// 处理缩放数据（使用动态范围）
+				if attr.name == "_SCALE" && attr.normalized {
+					rng := maxs[attr.name][j] - mins[attr.name][j]
+					if rng <= 0 {
+						val = 0
+					} else {
+						val = (val - mins[attr.name][j]) / rng
+					}
+					val = clamp(val, 0, 1)
+				}
+
+				// 处理其他属性的归一化
+				if attr.normalized && attr.name != "_SCALE" {
 					switch attr.compType {
 					case gltf.ComponentUbyte, gltf.ComponentUshort:
 						// 无符号归一化：clamp到[0, 1]
-						if val < 0 {
-							val = 0
-						} else if val > 1 {
-							val = 1
-						}
+						val = clamp(val, 0, 1)
 					case gltf.ComponentShort:
 						// 有符号归一化：clamp到[-1, 1]
-						if val < -1 {
-							val = -1
-						} else if val > 1 {
-							val = 1
-						}
+						val = clamp(val, -1, 1)
 					}
 				}
 
@@ -535,10 +578,6 @@ func ReadGaussianSplatting(doc *gltf.Document, primitive *gltf.Primitive) (*Vert
 		if err != nil {
 			return nil, nil, fmt.Errorf("读取颜色数据失败: %w", err)
 		}
-		// 添加范围恢复
-		if colorAccessor := doc.Accessors[colorAccIdx]; colorAccessor.Normalized {
-			restoreOriginalRange(vertexData.Colors, colorAccessor.Min, colorAccessor.Max, 4)
-		}
 	} else {
 		return nil, nil, fmt.Errorf("missing COLOR_0 attribute")
 	}
@@ -548,10 +587,6 @@ func ReadGaussianSplatting(doc *gltf.Document, primitive *gltf.Primitive) (*Vert
 		vertexData.Scales, err = readAccessorAsFloat32(doc, int(scaleAccIdx))
 		if err != nil {
 			return nil, nil, fmt.Errorf("读取缩放数据失败: %w", err)
-		}
-		// 恢复缩放原始范围
-		if scaleAccessor := doc.Accessors[scaleAccIdx]; scaleAccessor.Normalized {
-			restoreOriginalRange(vertexData.Scales, scaleAccessor.Min, scaleAccessor.Max, 3)
 		}
 	} else {
 		return nil, nil, fmt.Errorf("missing _SCALE attribute")
@@ -581,6 +616,25 @@ func ReadGaussianSplatting(doc *gltf.Document, primitive *gltf.Primitive) (*Vert
 		shCoeffs, err = readAccessorAsFloat32(doc, int(*gs.SphericalHarmonics))
 		if err != nil {
 			return nil, nil, fmt.Errorf("读取球谐系数失败: %w", err)
+		}
+	}
+
+	// 对缩放属性进行反归一化（如果需要）
+	if scaleAccIdx, ok := gs.Attributes["_SCALE"]; ok {
+		scaleAccessor := doc.Accessors[scaleAccIdx]
+		if scaleAccessor.Normalized {
+			min := scaleAccessor.Min
+			max := scaleAccessor.Max
+			if min != nil && max != nil && len(min) == 3 && len(max) == 3 {
+				for i := 0; i < len(vertexData.Scales); i += 3 {
+					for j := 0; j < 3; j++ {
+						rng := max[j] - min[j]
+						if rng > 0 {
+							vertexData.Scales[i+j] = vertexData.Scales[i+j]*rng + min[j]
+						}
+					}
+				}
+			}
 		}
 	}
 
@@ -734,14 +788,18 @@ func processByteComponents(buffer []byte, start uint32, stride uint32, compType 
 		}
 	}
 
+	// 修复：正确计算偏移量
 	for i := uint32(0); i < count; i++ {
 		offset := start + i*stride
 		for c := 0; c < compCount; c++ {
 			idx := i*uint32(compCount) + uint32(c)
+			byteOffset := offset + uint32(c)
+			val := buffer[byteOffset]
+
 			if compType == gltf.ComponentByte {
-				out[idx] = float32(int8(buffer[offset+uint32(c)])) / divisor
+				out[idx] = float32(int8(val)) / divisor
 			} else {
-				out[idx] = float32(buffer[offset+uint32(c)]) / divisor
+				out[idx] = float32(val) / divisor
 			}
 		}
 	}
@@ -790,6 +848,7 @@ func invertSplatData(data *VertexData) {
 
 		// 不透明度逆处理 (logit函数)
 		opacity := data.Colors[i+3]
+		// 添加安全保护，防止无效数学运算
 		if opacity <= 0 {
 			opacity = 1e-6
 		} else if opacity >= 1 {
@@ -798,7 +857,7 @@ func invertSplatData(data *VertexData) {
 		data.Colors[i+3] = float32(math.Log(float64(opacity / (1 - opacity))))
 	}
 
-	// 2. 缩放逆处理 (对数)
+	// 2. 缩放逆处理 (对数) - 添加安全保护
 	for i := 0; i < len(data.Scales); i++ {
 		if data.Scales[i] <= 0 {
 			data.Scales[i] = 1e-6
@@ -807,22 +866,4 @@ func invertSplatData(data *VertexData) {
 	}
 
 	// 3. 旋转数据已经是单位四元数，不需要逆处理
-}
-
-// 范围恢复函数
-func restoreOriginalRange(data []float32, min64, max64 []float32, compCount int) {
-	min := make([]float32, len(min64))
-	max := make([]float32, len(max64))
-	for i := range min64 {
-		min[i] = float32(min64[i])
-		max[i] = float32(max64[i])
-	}
-
-	for i := 0; i < len(data); i += compCount {
-		for j := 0; j < compCount; j++ {
-			idx := i + j
-			rng := max[j] - min[j]
-			data[idx] = data[idx]*rng + min[j]
-		}
-	}
 }
