@@ -456,11 +456,13 @@ func (e *MeshFeaturesEncoder) getOrCreateMetadata(doc *gltf.Document) (*extgltf.
 
 	extData, exists := doc.Extensions[extmesh.ExtensionName]
 	if !exists {
-		return &extgltf.ExtStructuralMetadata{
+		meta := &extgltf.ExtStructuralMetadata{
 			Schema: &extgltf.Schema{
 				Classes: make(map[string]extgltf.Class),
 			},
-		}, nil
+		}
+		doc.Extensions[extmesh.ExtensionName] = meta
+		return meta, nil
 	}
 
 	// 类型断言处理
@@ -483,13 +485,14 @@ func (e *MeshFeaturesEncoder) updateSchema(metadata *extgltf.ExtStructuralMetada
 
 	props := make(map[string]extgltf.ClassProperty)
 	for name, val := range sampleProps {
-		propType, componentType, err := inferPropertyType(val)
+		propType, componentType, isArray, err := inferPropertyType(val)
 		if err != nil {
 			return err
 		}
 		props[name] = extgltf.ClassProperty{
 			Type:          propType,
 			ComponentType: componentType,
+			Array:         isArray,
 		}
 	}
 	metadata.Schema.Classes[class] = extgltf.Class{Properties: props}
@@ -525,9 +528,17 @@ func (e *MeshFeaturesEncoder) createAccessor(doc *gltf.Document, data interface{
 
 	bufferView := &gltf.BufferView{
 		Buffer:     0,
+		ByteOffset: uint32(len(doc.Buffers[0].Data)),
 		ByteLength: uint32(buf.Len()),
 	}
 	doc.BufferViews = append(doc.BufferViews, bufferView)
+
+	doc.Buffers[0].Data = append(doc.Buffers[0].Data, buf.Bytes()...)
+	doc.Buffers[0].ByteLength += uint32(buf.Len())
+
+	pad := PaddingByte(int(doc.Buffers[0].ByteLength))
+	doc.Buffers[0].Data = append(doc.Buffers[0].Data, pad...)
+	doc.Buffers[0].ByteLength += uint32(len(pad))
 
 	accessor := &gltf.Accessor{
 		BufferView:    gltf.Index(uint32(len(doc.BufferViews) - 1)),
@@ -548,7 +559,7 @@ func (e *MeshFeaturesEncoder) createPropertyTable(
 ) (int, error) {
 	propData := make([]PropertyData, 0, len(props))
 	for name, values := range props {
-		propType, componentType, err := inferPropertyType(values) // 添加错误处理
+		propType, componentType, _, err := inferPropertyType(values) // 添加错误处理
 		if err != nil {
 			return 0, fmt.Errorf("infer property type for %s: %w", name, err)
 		}

@@ -70,33 +70,6 @@ func PaddingByte(size int) []byte {
 	return pad
 }
 
-func createZeroValue(sample interface{}) interface{} {
-	if sample == nil {
-		return nil
-	}
-
-	// 通用反射处理（覆盖所有类型）
-	typ := reflect.TypeOf(sample)
-	switch typ.Kind() {
-	case reflect.Slice, reflect.Map, reflect.Ptr, reflect.Chan, reflect.Func, reflect.Interface:
-		return reflect.Zero(typ).Interface() // 返回nil
-	case reflect.Array, reflect.Struct:
-		return reflect.New(typ).Elem().Interface() // 返回零值实例
-	case reflect.String:
-		return ""
-	case reflect.Bool:
-		return false
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		return reflect.Zero(typ).Interface() // 返回0
-	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		return reflect.Zero(typ).Interface()
-	case reflect.Float32, reflect.Float64:
-		return reflect.Zero(typ).Interface()
-	default:
-		return nil
-	}
-}
-
 func convertType(value interface{}, targetType reflect.Type, defaultValue interface{}) interface{} {
 	if value == nil {
 		return defaultValue
@@ -120,6 +93,11 @@ func convertType(value interface{}, targetType reflect.Type, defaultValue interf
 		case float64:
 			return int(v)
 		}
+	case reflect.String:
+		switch v := value.(type) {
+		case string:
+			return v
+		}
 	}
 
 	// 慢速路径：反射转换
@@ -137,66 +115,95 @@ func ptr[T any](v T) *T {
 }
 
 // inferPropertyType infers the property type
-func inferPropertyType(values interface{}) (extgltf.ClassPropertyType, *extgltf.ClassPropertyComponentType, error) {
+func inferPropertyType(values interface{}) (extgltf.ClassPropertyType, *extgltf.ClassPropertyComponentType, bool, error) {
 	switch v := reflect.ValueOf(values).Index(0).Interface().(type) {
 	case string:
-		return extgltf.ClassPropertyTypeString, nil, nil
+		return extgltf.ClassPropertyTypeString, nil, false, nil
 	case bool:
-		return extgltf.ClassPropertyTypeBoolean, nil, nil
+		return extgltf.ClassPropertyTypeBoolean, nil, false, nil
 	case float32:
-		return extgltf.ClassPropertyTypeScalar, ptr(extgltf.ClassPropertyComponentTypeFloat32), nil
+		return extgltf.ClassPropertyTypeScalar, ptr(extgltf.ClassPropertyComponentTypeFloat32), false, nil
 	case float64:
-		return extgltf.ClassPropertyTypeScalar, ptr(extgltf.ClassPropertyComponentTypeFloat64), nil
+		return extgltf.ClassPropertyTypeScalar, ptr(extgltf.ClassPropertyComponentTypeFloat64), false, nil
 	case int:
-		return extgltf.ClassPropertyTypeScalar, ptr(extgltf.ClassPropertyComponentTypeInt64), nil
+		return extgltf.ClassPropertyTypeScalar, ptr(extgltf.ClassPropertyComponentTypeInt64), false, nil
 	case int8:
-		return extgltf.ClassPropertyTypeScalar, ptr(extgltf.ClassPropertyComponentTypeInt8), nil
+		return extgltf.ClassPropertyTypeScalar, ptr(extgltf.ClassPropertyComponentTypeInt8), false, nil
 	case int16:
-		return extgltf.ClassPropertyTypeScalar, ptr(extgltf.ClassPropertyComponentTypeInt16), nil
+		return extgltf.ClassPropertyTypeScalar, ptr(extgltf.ClassPropertyComponentTypeInt16), false, nil
 	case int32:
-		return extgltf.ClassPropertyTypeScalar, ptr(extgltf.ClassPropertyComponentTypeInt32), nil
+		return extgltf.ClassPropertyTypeScalar, ptr(extgltf.ClassPropertyComponentTypeInt32), false, nil
 	case int64:
-		return extgltf.ClassPropertyTypeScalar, ptr(extgltf.ClassPropertyComponentTypeInt64), nil
+		return extgltf.ClassPropertyTypeScalar, ptr(extgltf.ClassPropertyComponentTypeInt64), false, nil
 	case uint:
-		return extgltf.ClassPropertyTypeScalar, ptr(extgltf.ClassPropertyComponentTypeUint64), nil
+		return extgltf.ClassPropertyTypeScalar, ptr(extgltf.ClassPropertyComponentTypeUint64), false, nil
 	case uint8:
-		return extgltf.ClassPropertyTypeScalar, ptr(extgltf.ClassPropertyComponentTypeUint8), nil
+		return extgltf.ClassPropertyTypeScalar, ptr(extgltf.ClassPropertyComponentTypeUint8), false, nil
 	case uint16:
-		return extgltf.ClassPropertyTypeScalar, ptr(extgltf.ClassPropertyComponentTypeUint16), nil
+		return extgltf.ClassPropertyTypeScalar, ptr(extgltf.ClassPropertyComponentTypeUint16), false, nil
 	case uint32:
-		return extgltf.ClassPropertyTypeScalar, ptr(extgltf.ClassPropertyComponentTypeUint32), nil
+		return extgltf.ClassPropertyTypeScalar, ptr(extgltf.ClassPropertyComponentTypeUint32), false, nil
 	case uint64:
-		return extgltf.ClassPropertyTypeScalar, ptr(extgltf.ClassPropertyComponentTypeUint64), nil
+		return extgltf.ClassPropertyTypeScalar, ptr(extgltf.ClassPropertyComponentTypeUint64), false, nil
+	case []string:
+		return extgltf.ClassPropertyTypeString, nil, true, nil
+	case []bool:
+		return extgltf.ClassPropertyTypeBoolean, nil, true, nil
+
+	case []int:
+		return extgltf.ClassPropertyTypeScalar, ptr(extgltf.ClassPropertyComponentTypeInt64), true, nil
+	case []int8:
+		return extgltf.ClassPropertyTypeScalar, ptr(extgltf.ClassPropertyComponentTypeInt8), true, nil
+	case []int16:
+		return extgltf.ClassPropertyTypeScalar, ptr(extgltf.ClassPropertyComponentTypeInt16), true, nil
+	case []int32:
+		return extgltf.ClassPropertyTypeScalar, ptr(extgltf.ClassPropertyComponentTypeInt32), true, nil
+	case []int64:
+		return extgltf.ClassPropertyTypeScalar, ptr(extgltf.ClassPropertyComponentTypeInt64), true, nil
+	case []uint:
+		return extgltf.ClassPropertyTypeScalar, ptr(extgltf.ClassPropertyComponentTypeUint64), true, nil
+	case []uint8:
+		return extgltf.ClassPropertyTypeScalar, ptr(extgltf.ClassPropertyComponentTypeUint8), true, nil
+	case []uint16:
+		return extgltf.ClassPropertyTypeScalar, ptr(extgltf.ClassPropertyComponentTypeUint16), true, nil
+	case []uint32:
+		return extgltf.ClassPropertyTypeScalar, ptr(extgltf.ClassPropertyComponentTypeUint32), true, nil
+	case []uint64:
+		return extgltf.ClassPropertyTypeScalar, ptr(extgltf.ClassPropertyComponentTypeUint64), true, nil
 	case []float32:
 		switch len(v) {
 		case 2:
-			return extgltf.ClassPropertyTypeVec2, ptr(extgltf.ClassPropertyComponentTypeFloat32), nil
+			return extgltf.ClassPropertyTypeVec2, ptr(extgltf.ClassPropertyComponentTypeFloat32), false, nil
 		case 3:
-			return extgltf.ClassPropertyTypeVec3, ptr(extgltf.ClassPropertyComponentTypeFloat32), nil
+			return extgltf.ClassPropertyTypeVec3, ptr(extgltf.ClassPropertyComponentTypeFloat32), false, nil
 		case 4:
-			return extgltf.ClassPropertyTypeVec4, ptr(extgltf.ClassPropertyComponentTypeFloat32), nil
+			return extgltf.ClassPropertyTypeVec4, ptr(extgltf.ClassPropertyComponentTypeFloat32), false, nil
+		default:
+			return extgltf.ClassPropertyTypeVec4, ptr(extgltf.ClassPropertyComponentTypeFloat32), true, nil
 		}
 	case mat3.T:
-		return extgltf.ClassPropertyTypeMat3, ptr(extgltf.ClassPropertyComponentTypeFloat32), nil
+		return extgltf.ClassPropertyTypeMat3, ptr(extgltf.ClassPropertyComponentTypeFloat32), false, nil
 	case mat4.T:
-		return extgltf.ClassPropertyTypeMat4, ptr(extgltf.ClassPropertyComponentTypeFloat32), nil
+		return extgltf.ClassPropertyTypeMat4, ptr(extgltf.ClassPropertyComponentTypeFloat32), false, nil
 	case mat3d.T:
-		return extgltf.ClassPropertyTypeMat3, ptr(extgltf.ClassPropertyComponentTypeFloat64), nil
+		return extgltf.ClassPropertyTypeMat3, ptr(extgltf.ClassPropertyComponentTypeFloat64), false, nil
 	case mat4d.T:
-		return extgltf.ClassPropertyTypeMat4, ptr(extgltf.ClassPropertyComponentTypeFloat64), nil
+		return extgltf.ClassPropertyTypeMat4, ptr(extgltf.ClassPropertyComponentTypeFloat64), false, nil
 	case []float64:
 		switch len(v) {
 		case 2:
-			return extgltf.ClassPropertyTypeVec2, ptr(extgltf.ClassPropertyComponentTypeFloat64), nil
+			return extgltf.ClassPropertyTypeVec2, ptr(extgltf.ClassPropertyComponentTypeFloat64), false, nil
 		case 3:
-			return extgltf.ClassPropertyTypeVec3, ptr(extgltf.ClassPropertyComponentTypeFloat64), nil
+			return extgltf.ClassPropertyTypeVec3, ptr(extgltf.ClassPropertyComponentTypeFloat64), false, nil
 		case 4:
-			return extgltf.ClassPropertyTypeVec4, ptr(extgltf.ClassPropertyComponentTypeFloat64), nil
+			return extgltf.ClassPropertyTypeVec4, ptr(extgltf.ClassPropertyComponentTypeFloat64), false, nil
+		default:
+			return extgltf.ClassPropertyTypeVec4, ptr(extgltf.ClassPropertyComponentTypeFloat32), true, nil
 		}
 	default:
-		return "", nil, fmt.Errorf("usupported type: %T", v)
+		return "", nil, false, fmt.Errorf("usupported type: %T", v)
 	}
-	return "", nil, fmt.Errorf("unable to infer the type")
+	return "", nil, false, fmt.Errorf("unable to infer the type")
 }
 
 func rackProps(props []map[string]interface{}) map[string]interface{} {
@@ -209,17 +216,21 @@ func rackProps(props []map[string]interface{}) map[string]interface{} {
 
 	for _, prop := range props {
 		for name, val := range prop {
-			if _, exists := fieldMeta[name]; !exists && val != nil {
+			meta, exists := fieldMeta[name]
+			if !exists && val != nil {
 				fieldOrder = append(fieldOrder, name)
-				typ := reflect.TypeOf(val)
-				fieldMeta[name] = struct {
+				typ := GetUnderlyingType(val)
+				meta = struct {
 					typ          reflect.Type
 					defaultValue interface{}
 				}{
 					typ:          typ,
-					defaultValue: createZeroValue(val),
+					defaultValue: CreateDefaultValue(typ),
 				}
+				fieldMeta[name] = meta
 			}
+			res := convertValue(meta.typ, val)
+			prop[name] = res
 		}
 	}
 
@@ -240,9 +251,107 @@ func rackProps(props []map[string]interface{}) map[string]interface{} {
 				values.Index(i).Set(reflect.ValueOf(meta.defaultValue))
 			}
 		}
-		result[name] = values.Interface().(interface{})
+		result[name] = values.Interface()
 	}
 	return result
+}
+
+func GetUnderlyingType(val interface{}) reflect.Type {
+	if val == nil {
+		return nil
+	}
+
+	typ := reflect.TypeOf(val)
+	if typ == nil {
+		return nil
+	}
+	return getBaseType(typ, val)
+}
+
+func getBaseType(typ reflect.Type, val interface{}) reflect.Type {
+	var val1 interface{}
+	var ty1 reflect.Type
+	switch typ.Kind() {
+	case reflect.Slice:
+		vals := val.([]interface{})
+		val1 = vals[0]
+		ty1 = typ.Elem()
+		t := getBaseType(ty1, val1)
+		return reflect.SliceOf(t)
+	case reflect.Array:
+		vals := val.([]interface{})
+		val1 = vals[0]
+		ty1 = typ.Elem()
+		t := getBaseType(ty1, val1)
+		return reflect.ArrayOf(typ.Len(), t)
+	case reflect.Map:
+		ty1 = typ.Elem()
+		vals := val.(map[string]interface{})
+		for _, v := range vals {
+			val1 = v
+			break
+		}
+		t := getBaseType(ty1, val1)
+		return reflect.MapOf(typ.Key(), t)
+	default:
+		switch val.(type) {
+		case string:
+			return reflect.TypeOf("")
+		case int:
+			return reflect.TypeOf(0)
+		case float64:
+			return reflect.TypeOf(float64(0.0))
+		case bool:
+			return reflect.TypeOf(false)
+		default:
+			return typ
+		}
+	}
+}
+
+func convertValue(typ reflect.Type, val interface{}) interface{} {
+	var ty1 reflect.Type
+	switch typ.Kind() {
+	case reflect.Slice:
+		vals := val.([]interface{})
+		ty1 = typ.Elem()
+		res := reflect.MakeSlice(typ, len(vals), len(vals))
+		for i, v := range vals {
+			res.Index(i).Set(reflect.ValueOf(convertValue(ty1, v)))
+		}
+		return res.Interface()
+	case reflect.Array:
+		vals := val.([]interface{})
+		ty1 = typ.Elem()
+		res := reflect.New(typ)
+		for i, v := range vals {
+			res.Index(i).Set(reflect.ValueOf(convertValue(ty1, v)))
+		}
+		return res.Interface()
+	case reflect.Map:
+		keyType := typ.Key()
+		ty1 = typ.Elem()
+		vals := val.(map[interface{}]interface{})
+		mapType := reflect.MapOf(keyType, ty1)
+		mapValue := reflect.MakeMap(mapType)
+
+		for k, v := range vals {
+			key := convertValue(keyType, k)
+			val := convertValue(ty1, v)
+			mapValue.SetMapIndex(reflect.ValueOf(key), reflect.ValueOf(val))
+		}
+		return mapValue.Interface()
+	default:
+		return convertType(val, typ, nil)
+	}
+}
+
+// CreateDefaultValue 创建该类型的默认值
+func CreateDefaultValue(typ reflect.Type) interface{} {
+	if typ == nil {
+		return nil
+	}
+	return reflect.Zero(typ).Interface()
 }
 
 func unmarshalExtension(ext interface{}, target interface{}) error {
