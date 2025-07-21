@@ -13,6 +13,7 @@ import (
 
 const (
 	ExtensionName = "KHR_gaussian_splatting"
+	SH0           = 0.28209479177387814
 )
 
 func init() {
@@ -80,6 +81,15 @@ func hasExtensionUsed(doc *gltf.Document, ext string) bool {
 	return false
 }
 
+func addExtensionUsed(doc *gltf.Document, ext string) {
+	for _, existing := range doc.ExtensionsUsed {
+		if existing == ext {
+			return
+		}
+	}
+	doc.ExtensionsUsed = append(doc.ExtensionsUsed, ext)
+}
+
 type QuantizationConfig struct {
 	PositionType gltf.ComponentType
 	ColorType    gltf.ComponentType
@@ -105,6 +115,53 @@ type VertexData struct {
 	Rotations []float32
 }
 
+// PrepareSplatData 根据规范转换原始数据
+func PrepareSplatData(data *VertexData) {
+	// 1. 颜色处理 (RGB 分量乘以 SH0 常数)
+	for i := 0; i < len(data.Colors); i += 4 {
+		// RGB 分量乘以 SH0
+		data.Colors[i+0] *= SH0
+		data.Colors[i+1] *= SH0
+		data.Colors[i+2] *= SH0
+
+		// 2. 不透明度处理 (sigmoid 激活)
+		data.Colors[i+3] = 1 / (1 + float32(math.Exp(-float64(data.Colors[i+3]))))
+	}
+
+	// 3. 缩放处理 (指数激活)
+	for i := 0; i < len(data.Scales); i++ {
+		data.Scales[i] = float32(math.Exp(float64(data.Scales[i])))
+	}
+
+	// 4. 旋转归一化
+	for i := 0; i < len(data.Rotations); i += 4 {
+		q := data.Rotations[i : i+4]
+		lenSq := q[0]*q[0] + q[1]*q[1] + q[2]*q[2] + q[3]*q[3]
+
+		if lenSq > 1e-12 { // 避免除以零
+			lenInv := 1 / float32(math.Sqrt(float64(lenSq)))
+			q[0] *= lenInv
+			q[1] *= lenInv
+			q[2] *= lenInv
+			q[3] *= lenInv
+		}
+	}
+}
+
+// ValidateRotation 验证旋转数据是否为单位四元数
+func ValidateRotation(rotations []float32) error {
+	for i := 0; i < len(rotations); i += 4 {
+		q := rotations[i : i+4]
+		lenSq := q[0]*q[0] + q[1]*q[1] + q[2]*q[2] + q[3]*q[3]
+
+		// 允许 1e-4 的误差范围
+		if math.Abs(float64(lenSq-1.0)) > 1e-4 {
+			return fmt.Errorf("非单位四元数在索引 %d: 长度平方 = %f", i, lenSq)
+		}
+	}
+	return nil
+}
+
 func WireGaussianSplatting(
 	doc *gltf.Document,
 	vertexData *VertexData,
@@ -112,7 +169,28 @@ func WireGaussianSplatting(
 	config *QuantizationConfig,
 	compress bool,
 ) (*GaussianSplatting, error) {
-	attrs := make(map[string]uint32)
+	// 验证旋转数据
+	if err := ValidateRotation(vertexData.Rotations); err != nil {
+		// 尝试修复非单位四元数
+		fmt.Printf("警告: %v, 尝试自动修复\n", err)
+		for i := 0; i < len(vertexData.Rotations); i += 4 {
+			q := vertexData.Rotations[i : i+4]
+			lenSq := q[0]*q[0] + q[1]*q[1] + q[2]*q[2] + q[3]*q[3]
+
+			if lenSq > 1e-12 { // 避免除以零
+				lenInv := 1 / float32(math.Sqrt(float64(lenSq)))
+				q[0] *= lenInv
+				q[1] *= lenInv
+				q[2] *= lenInv
+				q[3] *= lenInv
+			}
+		}
+
+		// 再次验证
+		if err := ValidateRotation(vertexData.Rotations); err != nil {
+			return nil, fmt.Errorf("旋转数据验证失败: %w", err)
+		}
+	}
 
 	vertexCount := len(vertexData.Positions) / 3
 	if len(vertexData.Colors)/4 != vertexCount ||
@@ -126,42 +204,166 @@ func WireGaussianSplatting(
 		addExtensionUsed(doc, "EXT_meshopt_compression")
 	}
 
-	// 创建访问器
-	posIdx, err := createAccessor(doc, vertexData.Positions,
-		config.PositionType, gltf.AccessorVec3, false, compress, config, "POSITION")
-	if err != nil {
-		return nil, fmt.Errorf("位置属性创建失败: %w", err)
+	// 定义属性布局
+	attributes := []struct {
+		name       string
+		data       []float32
+		compType   gltf.ComponentType
+		dataType   gltf.AccessorType
+		normalized bool
+	}{
+		{"POSITION", vertexData.Positions, config.PositionType, gltf.AccessorVec3, false},
+		{"COLOR_0", vertexData.Colors, config.ColorType, gltf.AccessorVec4, config.Normalized},
+		{"_SCALE", vertexData.Scales, config.ScaleType, gltf.AccessorVec3, config.Normalized},
+		{"_ROTATION", vertexData.Rotations, config.RotationType, gltf.AccessorVec4, config.Normalized},
 	}
-	attrs["POSITION"] = posIdx
 
-	colorIdx, err := createAccessor(doc, vertexData.Colors,
-		config.ColorType, gltf.AccessorVec4, config.Normalized, compress, config, "COLOR_0")
-	if err != nil {
-		return nil, fmt.Errorf("颜色属性创建失败: %w", err)
+	// 计算每个属性的大小和步长
+	attrSizes := make(map[string]int)
+	totalStride := 0
+	for _, attr := range attributes {
+		compSize := componentSize(attr.compType)
+		comps := int(attr.dataType.Components())
+		size := compSize * comps
+		attrSizes[attr.name] = size
+		totalStride += size
 	}
-	attrs["COLOR_0"] = colorIdx
 
-	scaleIdx, err := createAccessor(doc, vertexData.Scales,
-		config.ScaleType, gltf.AccessorVec3, config.Normalized, compress, config, "_SCALE")
-	if err != nil {
-		return nil, fmt.Errorf("缩放属性创建失败: %w", err)
+	// 创建交错缓冲区
+	buf := bytes.NewBuffer(make([]byte, 0, vertexCount*totalStride))
+
+	// 初始化min/max数组
+	mins := make(map[string][]float32)
+	maxs := make(map[string][]float32)
+	for _, attr := range attributes {
+		comps := attr.dataType.Components()
+		mins[attr.name] = make([]float32, comps)
+		maxs[attr.name] = make([]float32, comps)
+		for i := range mins[attr.name] {
+			mins[attr.name][i] = math.MaxFloat32
+			maxs[attr.name][i] = -math.MaxFloat32
+			if attr.name == "_ROTATION" {
+				mins[attr.name][i] = -1
+				maxs[attr.name][i] = 1
+			}
+		}
 	}
-	attrs["_SCALE"] = scaleIdx
 
-	rotIdx, err := createAccessor(doc, vertexData.Rotations,
-		config.RotationType, gltf.AccessorVec4, config.Normalized, compress, config, "_ROTATION")
-	if err != nil {
-		return nil, fmt.Errorf("旋转属性创建失败: %w", err)
+	// 第一次遍历：计算实际范围（旋转数据除外）
+	for i := 0; i < vertexCount; i++ {
+		for _, attr := range attributes {
+			if attr.name == "_ROTATION" {
+				continue
+			}
+
+			comps := int(attr.dataType.Components())
+			idx := i * comps
+
+			for j := 0; j < comps; j++ {
+				val := attr.data[idx+j]
+				if val < mins[attr.name][j] {
+					mins[attr.name][j] = val
+				}
+				if val > maxs[attr.name][j] {
+					maxs[attr.name][j] = val
+				}
+			}
+		}
 	}
-	attrs["_ROTATION"] = rotIdx
 
+	// 第二次遍历：填充缓冲区
+	for i := 0; i < vertexCount; i++ {
+		for _, attr := range attributes {
+			comps := int(attr.dataType.Components())
+			idx := i * comps
+
+			for j := 0; j < comps; j++ {
+				val := attr.data[idx+j]
+
+				// 处理归一化
+				if attr.normalized && attr.name != "_ROTATION" {
+					rng := maxs[attr.name][j] - mins[attr.name][j]
+					if rng > 0 {
+						val = (val - mins[attr.name][j]) / rng
+					} else {
+						val = 0
+					}
+				}
+
+				// 特殊处理旋转数据
+				if attr.name == "_ROTATION" {
+					val = clamp(val, -1, 1)
+				}
+
+				// 写入缓冲区
+				switch attr.compType {
+				case gltf.ComponentUbyte:
+					buf.WriteByte(uint8(val * 255))
+				case gltf.ComponentUshort:
+					binary.Write(buf, binary.LittleEndian, uint16(val*65535))
+				case gltf.ComponentShort:
+					binary.Write(buf, binary.LittleEndian, int16(val*32767))
+				default:
+					binary.Write(buf, binary.LittleEndian, val)
+				}
+			}
+		}
+	}
+
+	// 添加缓冲视图
+	dataBytes := buf.Bytes()
+	bvIndex, err := addBufferView(doc, dataBytes, compress, totalStride, vertexCount)
+	if err != nil {
+		return nil, err
+	}
+
+	// 创建访问器并设置属性映射
+	attrs := make(map[string]uint32)
+	offset := 0
+	for _, attr := range attributes {
+		accessor := &gltf.Accessor{
+			BufferView:    gltf.Index(uint32(bvIndex)),
+			ByteOffset:    uint32(offset),
+			ComponentType: attr.compType,
+			Count:         uint32(vertexCount),
+			Type:          attr.dataType,
+			Normalized:    attr.normalized,
+			Min:           mins[attr.name],
+			Max:           maxs[attr.name],
+		}
+
+		doc.Accessors = append(doc.Accessors, accessor)
+		attrs[attr.name] = uint32(len(doc.Accessors) - 1)
+		offset += attrSizes[attr.name]
+	}
+
+	// 处理球谐系数
 	var shAccessor *uint32
 	if len(shCoefficients) > 0 {
-		idx, err := createAccessor(doc, shCoefficients,
-			gltf.ComponentFloat, gltf.AccessorScalar, false, compress, config, "SH")
-		if err != nil {
-			return nil, fmt.Errorf("球谐系数创建失败: %w", err)
+		// 球谐系数不需要交错存储，单独处理
+		buf := new(bytes.Buffer)
+		for _, v := range shCoefficients {
+			binary.Write(buf, binary.LittleEndian, v)
 		}
+
+		// 添加缓冲视图
+		data := buf.Bytes()
+		bvIndex, err := addBufferView(doc, data, false, 0, 0)
+		if err != nil {
+			return nil, fmt.Errorf("球谐系数缓冲视图创建失败: %w", err)
+		}
+
+		// 创建访问器
+		count := len(shCoefficients)
+		accessor := &gltf.Accessor{
+			BufferView:    gltf.Index(uint32(bvIndex)),
+			ComponentType: gltf.ComponentFloat,
+			Count:         uint32(count),
+			Type:          gltf.AccessorScalar,
+		}
+
+		doc.Accessors = append(doc.Accessors, accessor)
+		idx := uint32(len(doc.Accessors) - 1)
 		shAccessor = &idx
 	}
 
@@ -189,122 +391,6 @@ func WireGaussianSplatting(
 	return gs, nil
 }
 
-func createAccessor(
-	doc *gltf.Document,
-	data []float32,
-	compType gltf.ComponentType,
-	dataType gltf.AccessorType,
-	normalized bool,
-	compress bool,
-	config *QuantizationConfig,
-	attrName string,
-) (uint32, error) {
-	components := int(dataType.Components())
-	count := len(data) / components
-	if len(data)%components != 0 {
-		return 0, fmt.Errorf("数据长度不匹配访问器类型")
-	}
-
-	buf := new(bytes.Buffer)
-	min := make([]float32, components)
-	max := make([]float32, components)
-
-	// 初始化min/max
-	for i := range min {
-		min[i] = math.MaxFloat32
-		max[i] = -math.MaxFloat32
-	}
-
-	// 特殊处理旋转数据
-	if attrName == "_ROTATION" {
-		for i := range min {
-			min[i] = -1
-			max[i] = 1
-		}
-	}
-
-	// 第一次遍历计算实际范围（旋转数据除外）
-	if attrName != "_ROTATION" {
-		for i, v := range data {
-			idx := i % components
-			if v < min[idx] {
-				min[idx] = v
-			}
-			if v > max[idx] {
-				max[idx] = v
-			}
-		}
-	}
-
-	// 第二次遍历处理量化
-	for i, v := range data {
-		idx := i % components
-		var quantizedValue float32
-
-		switch attrName {
-		case "_ROTATION":
-			// 旋转数据特殊处理，保持单位四元数
-			quantizedValue = clamp(v, -1, 1)
-		default:
-			if normalized {
-				// 正确归一化公式
-				rangeVal := max[idx] - min[idx]
-				if rangeVal > 0 {
-					quantizedValue = (v - min[idx]) / rangeVal
-				} else {
-					quantizedValue = 0
-				}
-			} else {
-				quantizedValue = v
-			}
-		}
-
-		// 根据类型处理量化
-		switch compType {
-		case gltf.ComponentUbyte:
-			val := uint8(quantizedValue * 255)
-			buf.WriteByte(val)
-		case gltf.ComponentUshort:
-			val := uint16(quantizedValue * 65535)
-			binary.Write(buf, binary.LittleEndian, val)
-		case gltf.ComponentShort:
-			val := int16(quantizedValue * 32767)
-			binary.Write(buf, binary.LittleEndian, val)
-		default:
-			binary.Write(buf, binary.LittleEndian, v)
-		}
-	}
-
-	// 添加缓冲区视图
-	bufViewIdx, err := addBufferView(doc, buf.Bytes(), compress, config)
-	if err != nil {
-		return 0, err
-	}
-
-	// 创建访问器
-	accessor := &gltf.Accessor{
-		BufferView:    gltf.Index(uint32(bufViewIdx)),
-		ComponentType: compType,
-		Count:         uint32(count),
-		Type:          dataType,
-		Normalized:    normalized,
-		Min:           min,
-		Max:           max,
-	}
-
-	doc.Accessors = append(doc.Accessors, accessor)
-	return uint32(len(doc.Accessors) - 1), nil
-}
-
-func calculateVertexLayout(config *QuantizationConfig) int {
-	size := 0
-	size += 3 * componentSize(config.PositionType)
-	size += 4 * componentSize(config.ColorType)
-	size += 3 * componentSize(config.ScaleType)
-	size += 4 * componentSize(config.RotationType)
-	return size
-}
-
 func componentSize(ct gltf.ComponentType) int {
 	switch ct {
 	case gltf.ComponentUbyte, gltf.ComponentByte:
@@ -316,19 +402,36 @@ func componentSize(ct gltf.ComponentType) int {
 	}
 }
 
-func addBufferView(doc *gltf.Document, data []byte, compress bool, config *QuantizationConfig) (int, error) {
+func addBufferView(doc *gltf.Document, data []byte, compress bool, stride, vertexCount int) (int, error) {
 	originalData := data
-	if compress {
-		vertexSize := calculateVertexLayout(config)
-		if len(data)%vertexSize != 0 {
-			return 0, fmt.Errorf("数据大小不符合顶点布局")
+	originalSize := len(originalData)
+
+	// 添加步长对齐填充（4字节边界）
+	if stride > 0 {
+		paddedStride := (stride + 3) &^ 3
+		if paddedStride != stride {
+			// 创建带填充字节的对齐缓冲区
+			alignedData := make([]byte, vertexCount*paddedStride)
+			for i := 0; i < vertexCount; i++ {
+				src := originalData[i*stride : (i+1)*stride]
+				dst := alignedData[i*paddedStride : (i+1)*paddedStride]
+				copy(dst, src)
+			}
+			data = alignedData
+			stride = paddedStride
+			originalSize = len(alignedData) // 更新原始大小为对齐后的大小
 		}
-		count := uint32(len(data) / vertexSize)
+	}
+
+	if compress {
+		if stride == 0 {
+			return 0, fmt.Errorf("压缩需要非零步长")
+		}
 
 		compressed, ext, err := meshopt.MeshoptEncode(
 			data,
-			count,
-			uint32(vertexSize),
+			uint32(vertexCount),
+			uint32(stride),
 			meshopt.ModeAttributes,
 			meshopt.FilterNone,
 		)
@@ -343,9 +446,9 @@ func addBufferView(doc *gltf.Document, data []byte, compress bool, config *Quant
 		// 添加压缩扩展
 		ext.Buffer = 0
 		ext.ByteOffset = 0
-		ext.ByteLength = uint32(len(data))
-		ext.ByteStride = uint32(vertexSize)
-		ext.Count = count
+		ext.ByteLength = uint32(originalSize) // 使用更新后的原始大小
+		ext.ByteStride = uint32(stride)
+		ext.Count = uint32(vertexCount)
 	}
 
 	if len(doc.Buffers) == 0 {
@@ -362,15 +465,19 @@ func addBufferView(doc *gltf.Document, data []byte, compress bool, config *Quant
 		ByteLength: uint32(len(data)),
 	}
 
+	if stride > 0 {
+		view.ByteStride = uint32(stride)
+	}
+
 	// 添加压缩扩展
 	if compress {
 		view.Extensions = make(gltf.Extensions)
 		view.Extensions["EXT_meshopt_compression"] = &meshopt.CompressionExtension{
 			Buffer:     0,
 			ByteOffset: byteOffset,
-			ByteLength: uint32(len(originalData)),
-			ByteStride: uint32(calculateVertexLayout(config)),
-			Count:      uint32(len(originalData)) / uint32(calculateVertexLayout(config)),
+			ByteLength: uint32(originalSize), // 使用更新后的原始大小
+			ByteStride: uint32(stride),
+			Count:      uint32(vertexCount),
 			Mode:       meshopt.ModeAttributes,
 			Filter:     meshopt.FilterNone,
 		}
@@ -378,15 +485,6 @@ func addBufferView(doc *gltf.Document, data []byte, compress bool, config *Quant
 
 	doc.BufferViews = append(doc.BufferViews, view)
 	return len(doc.BufferViews) - 1, nil
-}
-
-func addExtensionUsed(doc *gltf.Document, ext string) {
-	for _, existing := range doc.ExtensionsUsed {
-		if existing == ext {
-			return
-		}
-	}
-	doc.ExtensionsUsed = append(doc.ExtensionsUsed, ext)
 }
 
 func clamp(value, min, max float32) float32 {
