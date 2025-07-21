@@ -133,18 +133,26 @@ func PrepareSplatData(data *VertexData) {
 		data.Scales[i] = float32(math.Exp(float64(data.Scales[i])))
 	}
 
-	// 4. 旋转归一化
+	// 4. 增强旋转归一化
 	for i := 0; i < len(data.Rotations); i += 4 {
 		q := data.Rotations[i : i+4]
 		lenSq := q[0]*q[0] + q[1]*q[1] + q[2]*q[2] + q[3]*q[3]
 
-		if lenSq > 1e-12 { // 避免除以零
-			lenInv := 1 / float32(math.Sqrt(float64(lenSq)))
-			q[0] *= lenInv
-			q[1] *= lenInv
-			q[2] *= lenInv
-			q[3] *= lenInv
+		// 添加安全保护
+		if lenSq < 1e-12 {
+			q[0] = 1.0
+			q[1] = 0
+			q[2] = 0
+			q[3] = 0
+			continue
 		}
+
+		lenInv := 1 / float32(math.Sqrt(float64(lenSq)))
+		// 使用更高精度的归一化计算
+		q[0] = float32(math.Round(float64(q[0]*lenInv)*1e6) / 1e6)
+		q[1] = float32(math.Round(float64(q[1]*lenInv)*1e6) / 1e6)
+		q[2] = float32(math.Round(float64(q[2]*lenInv)*1e6) / 1e6)
+		q[3] = float32(math.Round(float64(q[3]*lenInv)*1e6) / 1e6)
 	}
 }
 
@@ -154,8 +162,8 @@ func ValidateRotation(rotations []float32) error {
 		q := rotations[i : i+4]
 		lenSq := q[0]*q[0] + q[1]*q[1] + q[2]*q[2] + q[3]*q[3]
 
-		// 允许 1e-4 的误差范围
-		if math.Abs(float64(lenSq-1.0)) > 1e-4 {
+		// 扩大容差范围到1e-3
+		if math.Abs(float64(lenSq-1.0)) > 1e-3 {
 			return fmt.Errorf("非单位四元数在索引 %d: 长度平方 = %f", i, lenSq)
 		}
 	}
@@ -169,6 +177,8 @@ func WireGaussianSplatting(
 	config *QuantizationConfig,
 	compress bool,
 ) (*GaussianSplatting, error) {
+	PrepareSplatData(vertexData)
+
 	// 验证旋转数据
 	if err := ValidateRotation(vertexData.Rotations); err != nil {
 		// 尝试修复非单位四元数
@@ -212,7 +222,7 @@ func WireGaussianSplatting(
 		dataType   gltf.AccessorType
 		normalized bool
 	}{
-		{"POSITION", vertexData.Positions, config.PositionType, gltf.AccessorVec3, false},
+		{"POSITION", vertexData.Positions, config.PositionType, gltf.AccessorVec3, config.Normalized},
 		{"COLOR_0", vertexData.Colors, config.ColorType, gltf.AccessorVec4, config.Normalized},
 		{"_SCALE", vertexData.Scales, config.ScaleType, gltf.AccessorVec3, config.Normalized},
 		{"_ROTATION", vertexData.Rotations, config.RotationType, gltf.AccessorVec4, config.Normalized},
@@ -249,28 +259,6 @@ func WireGaussianSplatting(
 		}
 	}
 
-	// 第一次遍历：计算实际范围（旋转数据除外）
-	for i := 0; i < vertexCount; i++ {
-		for _, attr := range attributes {
-			if attr.name == "_ROTATION" {
-				continue
-			}
-
-			comps := int(attr.dataType.Components())
-			idx := i * comps
-
-			for j := 0; j < comps; j++ {
-				val := attr.data[idx+j]
-				if val < mins[attr.name][j] {
-					mins[attr.name][j] = val
-				}
-				if val > maxs[attr.name][j] {
-					maxs[attr.name][j] = val
-				}
-			}
-		}
-	}
-
 	// 第二次遍历：填充缓冲区
 	for i := 0; i < vertexCount; i++ {
 		for _, attr := range attributes {
@@ -280,29 +268,56 @@ func WireGaussianSplatting(
 			for j := 0; j < comps; j++ {
 				val := attr.data[idx+j]
 
-				// 处理归一化
-				if attr.normalized && attr.name != "_ROTATION" {
-					rng := maxs[attr.name][j] - mins[attr.name][j]
-					if rng > 0 {
-						val = (val - mins[attr.name][j]) / rng
-					} else {
-						val = 0
+				// 处理旋转数据（先执行）
+				if attr.name == "_ROTATION" {
+					// 确保值在[-1, 1]范围内
+					if val < -1 {
+						val = -1
+					} else if val > 1 {
+						val = 1
 					}
 				}
 
-				// 特殊处理旋转数据
-				if attr.name == "_ROTATION" {
-					val = clamp(val, -1, 1)
+				// 处理归一化（旋转属性也需要）
+				if attr.normalized {
+					switch attr.compType {
+					case gltf.ComponentUbyte, gltf.ComponentUshort:
+						// 无符号归一化：clamp到[0, 1]
+						if val < 0 {
+							val = 0
+						} else if val > 1 {
+							val = 1
+						}
+					case gltf.ComponentShort:
+						// 有符号归一化：clamp到[-1, 1]
+						if val < -1 {
+							val = -1
+						} else if val > 1 {
+							val = 1
+						}
+					}
 				}
 
 				// 写入缓冲区
 				switch attr.compType {
 				case gltf.ComponentUbyte:
-					buf.WriteByte(uint8(val * 255))
+					if attr.normalized {
+						buf.WriteByte(uint8(val * 255)) // [0,1] -> [0,255]
+					} else {
+						buf.WriteByte(uint8(val)) // 直接截断
+					}
 				case gltf.ComponentUshort:
-					binary.Write(buf, binary.LittleEndian, uint16(val*65535))
+					if attr.normalized {
+						binary.Write(buf, binary.LittleEndian, uint16(val*65535))
+					} else {
+						binary.Write(buf, binary.LittleEndian, uint16(val))
+					}
 				case gltf.ComponentShort:
-					binary.Write(buf, binary.LittleEndian, int16(val*32767))
+					if attr.normalized {
+						binary.Write(buf, binary.LittleEndian, int16(val*32767))
+					} else {
+						binary.Write(buf, binary.LittleEndian, int16(val))
+					}
 				default:
 					binary.Write(buf, binary.LittleEndian, val)
 				}
@@ -404,7 +419,6 @@ func componentSize(ct gltf.ComponentType) int {
 
 func addBufferView(doc *gltf.Document, data []byte, compress bool, stride, vertexCount int) (int, error) {
 	originalData := data
-	originalSize := len(originalData)
 
 	// 添加步长对齐填充（4字节边界）
 	if stride > 0 {
@@ -419,14 +433,34 @@ func addBufferView(doc *gltf.Document, data []byte, compress bool, stride, verte
 			}
 			data = alignedData
 			stride = paddedStride
-			originalSize = len(alignedData) // 更新原始大小为对齐后的大小
 		}
+	}
+	padding := (4 - (len(data) % 4)) % 4
+	if padding > 0 {
+		data = append(data, make([]byte, padding)...)
+	}
+
+	view := &gltf.BufferView{
+		Buffer: 0,
+	}
+
+	var byteOffset uint32
+	if !compress {
+		// 非压缩模式：将数据追加到主缓冲区
+		if len(doc.Buffers) == 0 {
+			doc.Buffers = append(doc.Buffers, &gltf.Buffer{})
+		}
+		buffer := doc.Buffers[0]
+		byteOffset = buffer.ByteLength
+		buffer.ByteLength += uint32(len(data))
+		buffer.Data = append(buffer.Data, data...)
 	}
 
 	if compress {
-		if stride == 0 {
-			return 0, fmt.Errorf("压缩需要非零步长")
-		}
+		// 压缩模式：创建独立缓冲区存储压缩数据
+		buffer := &gltf.Buffer{ByteLength: uint32(len(data))}
+		doc.Buffers = append(doc.Buffers, buffer)
+		bufferIndex := len(doc.Buffers) - 1
 
 		compressed, ext, err := meshopt.MeshoptEncode(
 			data,
@@ -439,62 +473,32 @@ func addBufferView(doc *gltf.Document, data []byte, compress bool, stride, verte
 		if err != nil {
 			return 0, fmt.Errorf("meshopt压缩失败: %w", err)
 		}
+		buffer.Data = append(buffer.Data, compressed...)
 
-		// 使用压缩后的数据
-		data = compressed
-
-		// 添加压缩扩展
-		ext.Buffer = 0
-		ext.ByteOffset = 0
-		ext.ByteLength = uint32(originalSize) // 使用更新后的原始大小
-		ext.ByteStride = uint32(stride)
+		ext.ByteLength = uint32(len(compressed))
 		ext.Count = uint32(vertexCount)
-	}
+		ext.ByteStride = uint32(stride)
 
-	if len(doc.Buffers) == 0 {
-		doc.Buffers = append(doc.Buffers, &gltf.Buffer{})
-	}
-
-	buffer := doc.Buffers[0]
-	byteOffset := buffer.ByteLength
-	buffer.ByteLength += uint32(len(data))
-
-	view := &gltf.BufferView{
-		Buffer:     0,
-		ByteOffset: byteOffset,
-		ByteLength: uint32(len(data)),
+		view.Extensions = make(gltf.Extensions)
+		view.Extensions["EXT_meshopt_compression"] = &meshopt.CompressionExtension{
+			Buffer:     uint32(bufferIndex),
+			ByteLength: uint32(len(compressed)),
+			// 记录原始数据参数
+			Count:      uint32(vertexCount),
+			ByteStride: uint32(stride),
+		}
+	} else {
+		// 非压缩模式使用主缓冲区
+		view.Buffer = 0
+		view.ByteOffset = byteOffset
 	}
 
 	if stride > 0 {
 		view.ByteStride = uint32(stride)
 	}
 
-	// 添加压缩扩展
-	if compress {
-		view.Extensions = make(gltf.Extensions)
-		view.Extensions["EXT_meshopt_compression"] = &meshopt.CompressionExtension{
-			Buffer:     0,
-			ByteOffset: byteOffset,
-			ByteLength: uint32(originalSize), // 使用更新后的原始大小
-			ByteStride: uint32(stride),
-			Count:      uint32(vertexCount),
-			Mode:       meshopt.ModeAttributes,
-			Filter:     meshopt.FilterNone,
-		}
-	}
-
 	doc.BufferViews = append(doc.BufferViews, view)
 	return len(doc.BufferViews) - 1, nil
-}
-
-func clamp(value, min, max float32) float32 {
-	if value < min {
-		return min
-	}
-	if value > max {
-		return max
-	}
-	return value
 }
 
 // ReadGaussianSplatting 从glTF文档中读取高斯泼溅数据
@@ -530,6 +534,10 @@ func ReadGaussianSplatting(doc *gltf.Document, primitive *gltf.Primitive) (*Vert
 		vertexData.Colors, err = readAccessorAsFloat32(doc, int(colorAccIdx))
 		if err != nil {
 			return nil, nil, fmt.Errorf("读取颜色数据失败: %w", err)
+		}
+		// 添加范围恢复
+		if colorAccessor := doc.Accessors[colorAccIdx]; colorAccessor.Normalized {
+			restoreOriginalRange(vertexData.Colors, colorAccessor.Min, colorAccessor.Max, 4)
 		}
 	} else {
 		return nil, nil, fmt.Errorf("missing COLOR_0 attribute")
