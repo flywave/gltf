@@ -510,7 +510,7 @@ func ReadGaussianSplatting(doc *gltf.Document, primitive *gltf.Primitive) (*Vert
 					v := vertexData.Positions[i+j]
 					// 反归一化：[0, 65535] → [min, max]
 					v = v/65535*(max[j]-min[j]) + min[j]
-					vertexData.Positions[i+j] = v
+					vertexData.Positions[i+j] = v / 65535
 				}
 			}
 		}
@@ -545,9 +545,17 @@ func ReadGaussianSplatting(doc *gltf.Document, primitive *gltf.Primitive) (*Vert
 
 	// 读取旋转
 	if rotAccIdx, ok := primitive.Attributes["_ROTATION"]; ok {
+		rotAccessor := doc.Accessors[rotAccIdx]
+
 		vertexData.Rotations, err = readAccessorAsFloat32(doc, int(rotAccIdx))
 		if err != nil {
 			return nil, fmt.Errorf("读取旋转数据失败: %w", err)
+		}
+		if rotAccessor.ComponentType == gltf.ComponentShort {
+			for i := 0; i < len(vertexData.Rotations); i++ {
+				v := vertexData.Rotations[i]
+				vertexData.Rotations[i] = v / 32767
+			}
 		}
 	} else {
 		return nil, fmt.Errorf("missing _ROTATION attribute")

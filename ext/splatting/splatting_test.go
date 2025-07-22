@@ -48,7 +48,7 @@ func TestLoadSynthetic(t *testing.T) {
 
 func TestLoadMeshopt(t *testing.T) {
 	// 读取 GLB 文件
-	doc, err := gltf.Open("../../testdata/Splatting/meshopt_full.gltf")
+	doc, err := gltf.Open("../../testdata/Splatting/meshopt.gltf")
 	require.NoError(t, err, "无法打开 GLB 文件")
 
 	// 验证图元存在
