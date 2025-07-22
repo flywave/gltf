@@ -1,0 +1,78 @@
+{
+  "extensionsUsed": ["KHR_materials_unlit", "KHR_gaussian_splatting"],
+  "accessors": [{
+      "bufferView": 0,
+      "componentType": 5126,
+      "count": 312112,
+      "type": "VEC4"
+    }, {
+      "bufferView": 1,
+      "componentType": 5126,
+      "count": 312112,
+      "type": "VEC3"
+    }, {
+      "bufferView": 2,
+      "componentType": 5126,
+      "count": 312112,
+      "type": "VEC3",
+      "max": [0.16455078125, -0.234130859375, 0.48583984375],
+      "min": [-0.48583984375, -0.48583984375, -0.48583984375]
+    }, {
+      "bufferView": 3,
+      "componentType": 5121,
+      "normalized": true,
+      "count": 312112,
+      "type": "VEC4"
+    }],
+  "asset": {
+    "version": "2.0"
+  },
+  "buffers": [{
+      "uri": "",
+      "byteLength": 13732928
+    }],
+  "bufferViews": [{
+      "buffer": 0,
+      "byteOffset": 8739136,
+      "byteLength": 4993792
+    }, {
+      "buffer": 0,
+      "byteOffset": 4993792,
+      "byteLength": 3745344
+    }, {
+      "buffer": 0,
+      "byteLength": 3745344
+    }, {
+      "buffer": 0,
+      "byteOffset": 3745344,
+      "byteLength": 1248448
+    }],
+  "materials": [{
+      "extensions": {
+        "KHR_materials_unlit": {}
+      }
+    }],
+  "meshes": [{
+      "primitives": [{
+          "attributes": {
+            "COLOR_0": 3,
+            "POSITION": 2,
+            "_SCALE": 1,
+            "_ROTATION": 0
+          },
+          "material": 0,
+          "mode": 0,
+          "extensions": {
+            "KHR_gaussian_splatting": {}
+          }
+        }]
+    }],
+  "nodes": [{
+      "matrix": [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.13612890243530273, 0.0054874420166015625, -0.3700018525123596, 1.0],
+      "mesh": 0
+    }],
+  "scene": 0,
+  "scenes": [{
+      "nodes": [0]
+    }]
+}

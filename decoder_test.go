@@ -189,7 +189,7 @@ func TestDecoder_decodeBuffer(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if err := tt.d.decodeBuffer(tt.args.buffer); (err != nil) != tt.wantErr {
+			if err := tt.d.decodeBuffer(tt.args.buffer, nil, 0); (err != nil) != tt.wantErr {
 				t.Errorf("Decoder.decodeBuffer() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}

@@ -85,7 +85,7 @@ func (d *Decoder) Decode(doc *Document) error {
 		}
 	}
 	for i := externalBufferIndex; i < len(doc.Buffers); i++ {
-		if err := d.decodeBuffer(doc.Buffers[i]); err != nil {
+		if err := d.decodeBuffer(doc.Buffers[i], doc, i); err != nil {
 			return err
 		}
 	}
@@ -143,17 +143,25 @@ func (d *Decoder) chunkHeader() (*chunkHeader, error) {
 	return &header, nil
 }
 
-func (d *Decoder) decodeBuffer(buffer *Buffer) error {
+func (d *Decoder) decodeBuffer(buffer *Buffer, doc *Document, bufferIndex int) error {
 	if err := d.validateBuffer(buffer); err != nil {
 		return err
 	}
-	if buffer.URI == "" {
+	// 检查是否有bufferView引用此缓冲区
+	isReferenced := false
+	for _, bv := range doc.BufferViews {
+		if bv.Buffer == uint32(bufferIndex) {
+			isReferenced = true
+			break
+		}
+	}
+	if buffer.URI == "" && !isReferenced {
 		return errors.New("gltf: buffer without URI")
 	}
 	var err error
 	if buffer.IsEmbeddedResource() {
 		buffer.Data, err = buffer.MarshalData()
-	} else {
+	} else if !isReferenced {
 		err = validateBufferURI(buffer.URI)
 		if err == nil && d.Fsys != nil {
 			buffer.Data, err = fs.ReadFile(d.Fsys, buffer.URI)

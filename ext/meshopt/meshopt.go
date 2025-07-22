@@ -73,13 +73,22 @@ func decodeBufferView(doc *gltf.Document, bufView *gltf.BufferView) error {
 		return errors.New("无效的扩展格式")
 	}
 
-	// 验证buffer索引有效性
+	// 关键修复1：使用压缩数据源buffer
 	if int(ext.Buffer) >= len(doc.Buffers) {
 		return fmt.Errorf("无效的buffer索引: %d", ext.Buffer)
 	}
-
 	srcBuffer := doc.Buffers[ext.Buffer]
+
+	// 关键修复2：处理没有URI的buffer
+	if int(bufView.Buffer) >= len(doc.Buffers) {
+		return fmt.Errorf("无效的目标buffer索引: %d", bufView.Buffer)
+	}
 	dstBuffer := doc.Buffers[bufView.Buffer]
+
+	// 确保目标buffer有数据存储空间
+	if dstBuffer.Data == nil {
+		dstBuffer.Data = make([]byte, dstBuffer.ByteLength)
+	}
 
 	// 验证字节范围有效性
 	if int(ext.ByteOffset+ext.ByteLength) > len(srcBuffer.Data) {
@@ -87,10 +96,8 @@ func decodeBufferView(doc *gltf.Document, bufView *gltf.BufferView) error {
 			ext.ByteOffset, ext.ByteOffset+ext.ByteLength, len(srcBuffer.Data))
 	}
 
-	// 获取压缩数据
 	srcData := srcBuffer.Data[ext.ByteOffset : ext.ByteOffset+ext.ByteLength]
 
-	// 调用meshopt解码库
 	dstData, err := MeshoptDecode(
 		ext.Count,
 		ext.ByteStride,
@@ -102,10 +109,13 @@ func decodeBufferView(doc *gltf.Document, bufView *gltf.BufferView) error {
 		return fmt.Errorf("解压失败: %w", err)
 	}
 
-	// 验证目标缓冲区容量
+	// 关键修复3：确保目标buffer有足够容量
 	requiredLen := int(bufView.ByteOffset) + len(dstData)
 	if len(dstBuffer.Data) < requiredLen {
-		dstBuffer.Data = append(dstBuffer.Data, make([]byte, requiredLen-len(dstBuffer.Data))...)
+		newData := make([]byte, requiredLen)
+		copy(newData, dstBuffer.Data)
+		dstBuffer.Data = newData
+		dstBuffer.ByteLength = uint32(requiredLen)
 	}
 
 	copy(dstBuffer.Data[bufView.ByteOffset:], dstData)
@@ -220,7 +230,7 @@ func applyFilter(data []byte, stride uint32, filter CompressionFilter) ([]byte, 
 			dst,
 			count,
 			int(stride),
-			0,
+			15,
 			floatData,
 		)
 	case FilterNone:
@@ -258,7 +268,6 @@ func bytesToFloat32(b []byte) []float32 {
 }
 
 func MeshoptDecode(count uint32, stride uint32, data []byte, mode CompressionMode, filter CompressionFilter) ([]byte, error) {
-	// 验证输入参数有效性
 	if count == 0 {
 		return nil, errors.New("无效的count值")
 	}
@@ -312,14 +321,12 @@ func MeshoptDecode(count uint32, stride uint32, data []byte, mode CompressionMod
 		return nil, fmt.Errorf("解压失败: %w", err)
 	}
 
-	// 验证输出数据完整性
 	if len(dst) != expectedSize {
 		return nil, fmt.Errorf("解压数据大小不匹配 预期:%d 实际:%d",
 			expectedSize, len(dst))
 	}
 
-	// 应用后处理过滤器
-	if filter != FilterNone {
+	if filter != FilterNone && filter != "" {
 		return decodeBufferViewWithFilter(dst, filter, stride)
 	}
 	return dst, nil
