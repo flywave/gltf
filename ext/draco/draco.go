@@ -412,6 +412,38 @@ func encodePrimitive(doc *gltf.Document, encoder *draco.Encoder, primitive *gltf
 			return fmt.Errorf("解析属性 %s 失败: %w", name, err)
 		}
 
+		stride := 2
+		switch texAcc.Type {
+		case gltf.AccessorVec3, gltf.AccessorScalar:
+			stride = 3
+		}
+
+		var pos interface{}
+		if stride == 2 {
+			pos = [][2]float32{}
+		} else {
+			switch texAcc.ComponentType {
+			case gltf.ComponentUshort:
+				pos = [][3]uint16{}
+			case gltf.ComponentUint:
+				pos = [][3]uint32{}
+			default:
+				pos = [][3]float32{}
+			}
+		}
+
+		for i := 0; i < len(data); i += stride {
+			switch p := pos.(type) {
+			case [][2]float32:
+				p = append(p, [2]float32{data[i], data[i+1]})
+			case [][3]float32:
+				p = append(p, [3]float32{data[i], data[i+1], data[i+2]})
+			case [][3]uint16:
+				p = append(p, [3]uint16{uint16(data[i]), uint16(data[i+1]), uint16(data[i+2])})
+			case [][3]uint32:
+				p = append(p, [3]uint32{uint32(data[i]), uint32(data[i+1]), uint32(data[i+2])})
+			}
+		}
 		builder.SetAttribute(faceCOunt, data, attrType)
 	}
 
