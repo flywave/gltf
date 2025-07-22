@@ -21,8 +21,7 @@ func init() {
 }
 
 type GaussianSplatting struct {
-	Attributes         map[string]uint32 `json:"attributes"`
-	SphericalHarmonics *uint32           `json:"sphericalHarmonics,omitempty"`
+	Attributes map[string]uint32 `json:"attributes"`
 }
 
 func UnmarshalGaussianSplatting(data []byte) (interface{}, error) {
@@ -56,13 +55,9 @@ func (g *GaussianSplatting) MarshalJSON() ([]byte, error) {
 	})
 }
 
-func CreateGaussianPrimitive(doc *gltf.Document, attributes map[string]uint32, shAccessor *uint32) *GaussianSplatting {
+func CreateGaussianPrimitive(doc *gltf.Document, attributes map[string]uint32) *GaussianSplatting {
 	gs := &GaussianSplatting{
 		Attributes: attributes,
-	}
-
-	if shAccessor != nil {
-		gs.SphericalHarmonics = shAccessor
 	}
 
 	if !hasExtensionUsed(doc, ExtensionName) {
@@ -103,7 +98,7 @@ func DefaultQuantization() *QuantizationConfig {
 		PositionType: gltf.ComponentFloat,
 		ColorType:    gltf.ComponentUbyte,
 		RotationType: gltf.ComponentShort,
-		ScaleType:    gltf.ComponentFloat, // 改为浮点型以保持精度
+		ScaleType:    gltf.ComponentFloat,
 		Normalized:   true,
 	}
 }
@@ -119,50 +114,55 @@ type VertexData struct {
 func PrepareSplatData(data *VertexData) {
 	// 1. 颜色处理 (RGB 分量乘以 SH0 常数)
 	for i := 0; i < len(data.Colors); i += 4 {
-		// RGB 分量乘以 SH0
+		if i+3 >= len(data.Colors) {
+			break
+		}
+
 		data.Colors[i+0] *= SH0
 		data.Colors[i+1] *= SH0
 		data.Colors[i+2] *= SH0
 
-		// 2. 不透明度处理 (sigmoid 激活)
-		// 添加安全保护，防止无效数学运算
-		if !math.IsNaN(float64(data.Colors[i+3])) && !math.IsInf(float64(data.Colors[i+3]), 0) {
-			data.Colors[i+3] = 1 / (1 + float32(math.Exp(-float64(data.Colors[i+3]))))
-		} else {
-			data.Colors[i+3] = 0.5 // 默认值
-		}
+		// 应用不透明度 sigmoid
+		opacity := data.Colors[i+3]
+		data.Colors[i+3] = 1 / (1 + float32(math.Exp(-float64(opacity))))
 	}
 
-	// 3. 缩放处理 (指数激活)
+	// 2. 缩放处理 (带符号的对数变换)
 	for i := 0; i < len(data.Scales); i++ {
-		// 添加安全保护
-		if !math.IsNaN(float64(data.Scales[i])) && !math.IsInf(float64(data.Scales[i]), 0) {
-			data.Scales[i] = float32(math.Exp(float64(data.Scales[i])))
-		} else {
-			data.Scales[i] = 1.0 // 默认值
+		// 处理接近零的值
+		val := data.Scales[i]
+		if math.Abs(float64(val)) < 1e-6 {
+			if val < 0 {
+				val = -1e-6
+			} else {
+				val = 1e-6
+			}
 		}
+
+		// 保留符号的对数变换
+		sign := float32(1.0)
+		if val < 0 {
+			sign = -1.0
+		}
+		absVal := math.Abs(float64(val))
+		data.Scales[i] = sign * float32(math.Log(absVal))
 	}
 
-	// 4. 增强旋转归一化
+	// 3. 旋转归一化 (处理零旋转)
 	for i := 0; i < len(data.Rotations); i += 4 {
 		q := data.Rotations[i : i+4]
 		lenSq := q[0]*q[0] + q[1]*q[1] + q[2]*q[2] + q[3]*q[3]
 
-		// 添加安全保护
-		if lenSq < 1e-12 {
-			q[0] = 1.0
-			q[1] = 0
-			q[2] = 0
-			q[3] = 0
-			continue
+		if lenSq > 1e-6 { // 只对非零向量归一化
+			lenInv := 1 / float32(math.Sqrt(float64(lenSq)))
+			q[0] *= lenInv
+			q[1] *= lenInv
+			q[2] *= lenInv
+			q[3] *= lenInv
+		} else {
+			// 设置默认单位四元数
+			q[0], q[1], q[2], q[3] = 1, 0, 0, 0
 		}
-
-		lenInv := 1 / float32(math.Sqrt(float64(lenSq)))
-		// 使用更高精度的归一化计算
-		q[0] = float32(math.Round(float64(q[0]*lenInv)*1e6) / 1e6)
-		q[1] = float32(math.Round(float64(q[1]*lenInv)*1e6) / 1e6)
-		q[2] = float32(math.Round(float64(q[2]*lenInv)*1e6) / 1e6)
-		q[3] = float32(math.Round(float64(q[3]*lenInv)*1e6) / 1e6)
 	}
 }
 
@@ -194,7 +194,6 @@ func ValidateRotation(rotations []float32) error {
 func WireGaussianSplatting(
 	doc *gltf.Document,
 	vertexData *VertexData,
-	shCoefficients []float32,
 	config *QuantizationConfig,
 	compress bool,
 ) (*GaussianSplatting, error) {
@@ -258,11 +257,90 @@ func WireGaussianSplatting(
 		dataType   gltf.AccessorType
 		normalized bool
 		min, max   []float32 // 缩放范围
-	}{
-		{"POSITION", vertexData.Positions, config.PositionType, gltf.AccessorVec3, config.Normalized, nil, nil},
-		{"COLOR_0", vertexData.Colors, config.ColorType, gltf.AccessorVec4, config.Normalized, nil, nil},
-		{"_SCALE", vertexData.Scales, config.ScaleType, gltf.AccessorVec3, config.Normalized, scaleMins[:], scaleMaxs[:]},
-		{"_ROTATION", vertexData.Rotations, config.RotationType, gltf.AccessorVec4, config.Normalized, nil, nil},
+	}{}
+
+	if config != nil {
+		// 使用量化配置
+		attributes = append(attributes, []struct {
+			name       string
+			data       []float32
+			compType   gltf.ComponentType
+			dataType   gltf.AccessorType
+			normalized bool
+			min, max   []float32
+		}{
+			{
+				name:       "POSITION",
+				data:       vertexData.Positions,
+				compType:   config.PositionType,
+				dataType:   gltf.AccessorVec3,
+				normalized: false,
+			},
+			{
+				name:       "COLOR_0",
+				data:       vertexData.Colors,
+				compType:   config.ColorType,
+				dataType:   gltf.AccessorVec4,
+				normalized: config.Normalized,
+			},
+			{
+				name:       "_SCALE",
+				data:       vertexData.Scales,
+				compType:   config.ScaleType,
+				dataType:   gltf.AccessorVec3,
+				normalized: config.Normalized,
+				min:        scaleMins[:],
+				max:        scaleMaxs[:],
+			},
+			{
+				name:       "_ROTATION",
+				data:       vertexData.Rotations,
+				compType:   config.RotationType,
+				dataType:   gltf.AccessorVec4,
+				normalized: config.Normalized,
+			},
+		}...)
+	} else {
+		// 默认全精度配置
+		attributes = append(attributes, []struct {
+			name       string
+			data       []float32
+			compType   gltf.ComponentType
+			dataType   gltf.AccessorType
+			normalized bool
+			min, max   []float32
+		}{
+			{
+				name:       "POSITION",
+				data:       vertexData.Positions,
+				compType:   gltf.ComponentFloat,
+				dataType:   gltf.AccessorVec3,
+				normalized: false,
+			},
+			{
+				name:       "COLOR_0",
+				data:       vertexData.Colors,
+				compType:   gltf.ComponentFloat,
+				dataType:   gltf.AccessorVec4,
+				normalized: false,
+			},
+			{
+				name:       "_SCALE",
+				data:       vertexData.Scales,
+				compType:   gltf.ComponentFloat,
+				dataType:   gltf.AccessorVec3,
+				normalized: false,
+				min:        scaleMins[:],
+				max:        scaleMaxs[:],
+			},
+			{
+				name:       "_ROTATION",
+				data:       vertexData.Rotations,
+				compType:   gltf.ComponentFloat,
+				dataType:   gltf.AccessorVec4,
+				normalized: false,
+			},
+		}...)
 	}
 
 	// 计算每个属性的大小和步长
@@ -322,7 +400,7 @@ func WireGaussianSplatting(
 				if attr.name == "_SCALE" && attr.normalized {
 					rng := maxs[attr.name][j] - mins[attr.name][j]
 					if rng <= 0 {
-						val = 0
+						val = 0.5 // 当范围为0时使用中间值
 					} else {
 						val = (val - mins[attr.name][j]) / rng
 					}
@@ -395,40 +473,11 @@ func WireGaussianSplatting(
 		offset += attrSizes[attr.name]
 	}
 
-	// 处理球谐系数
-	var shAccessor *uint32
-	if len(shCoefficients) > 0 {
-		// 球谐系数不需要交错存储，单独处理
-		buf := new(bytes.Buffer)
-		for _, v := range shCoefficients {
-			binary.Write(buf, binary.LittleEndian, v)
-		}
-
-		// 添加缓冲视图
-		data := buf.Bytes()
-		bvIndex, err := addBufferView(doc, data, false, 0, 0)
-		if err != nil {
-			return nil, fmt.Errorf("球谐系数缓冲视图创建失败: %w", err)
-		}
-
-		// 创建访问器
-		count := len(shCoefficients)
-		accessor := &gltf.Accessor{
-			BufferView:    gltf.Index(uint32(bvIndex)),
-			ComponentType: gltf.ComponentFloat,
-			Count:         uint32(count),
-			Type:          gltf.AccessorScalar,
-		}
-
-		doc.Accessors = append(doc.Accessors, accessor)
-		idx := uint32(len(doc.Accessors) - 1)
-		shAccessor = &idx
-	}
-
-	gs := CreateGaussianPrimitive(doc, attrs, shAccessor)
+	gs := CreateGaussianPrimitive(doc, attrs)
 
 	primitive := &gltf.Primitive{
 		Attributes: attrs,
+		Mode:       gltf.PrimitivePoints,
 		Extensions: make(gltf.Extensions),
 	}
 	primitive.Extensions[ExtensionName] = gs
@@ -439,7 +488,7 @@ func WireGaussianSplatting(
 	doc.Meshes[0].Primitives = append(doc.Meshes[0].Primitives, primitive)
 
 	// 添加量化扩展声明
-	if config.PositionType != gltf.ComponentFloat ||
+	if config != nil && config.PositionType != gltf.ComponentFloat ||
 		config.ColorType != gltf.ComponentFloat ||
 		config.ScaleType != gltf.ComponentFloat ||
 		config.RotationType != gltf.ComponentFloat {
@@ -517,6 +566,7 @@ func addBufferView(doc *gltf.Document, data []byte, compress bool, stride, verte
 			return 0, fmt.Errorf("meshopt压缩失败: %w", err)
 		}
 		buffer.Data = append(buffer.Data, compressed...)
+		buffer.ByteLength = uint32(len(compressed))
 
 		ext.ByteLength = uint32(len(compressed))
 		ext.Count = uint32(vertexCount)
@@ -545,17 +595,17 @@ func addBufferView(doc *gltf.Document, data []byte, compress bool, stride, verte
 }
 
 // ReadGaussianSplatting 从glTF文档中读取高斯泼溅数据
-func ReadGaussianSplatting(doc *gltf.Document, primitive *gltf.Primitive) (*VertexData, []float32, error) {
+func ReadGaussianSplatting(doc *gltf.Document, primitive *gltf.Primitive) (*VertexData, error) {
 	// 检查扩展是否存在
 	ext, exists := primitive.Extensions[ExtensionName]
 	if !exists {
-		return nil, nil, fmt.Errorf("primitive does not have KHR_gaussian_splatting extension")
+		return nil, fmt.Errorf("primitive does not have KHR_gaussian_splatting extension")
 	}
 
 	// 将扩展解析为GaussianSplatting结构
 	gs, ok := ext.(*GaussianSplatting)
 	if !ok {
-		return nil, nil, fmt.Errorf("invalid KHR_gaussian_splatting extension")
+		return nil, fmt.Errorf("invalid KHR_gaussian_splatting extension")
 	}
 
 	// 读取各个属性
@@ -566,40 +616,40 @@ func ReadGaussianSplatting(doc *gltf.Document, primitive *gltf.Primitive) (*Vert
 	if posAccIdx, ok := gs.Attributes["POSITION"]; ok {
 		vertexData.Positions, err = readAccessorAsFloat32(doc, int(posAccIdx))
 		if err != nil {
-			return nil, nil, fmt.Errorf("读取位置数据失败: %w", err)
+			return nil, fmt.Errorf("读取位置数据失败: %w", err)
 		}
 	} else {
-		return nil, nil, fmt.Errorf("missing POSITION attribute")
+		return nil, fmt.Errorf("missing POSITION attribute")
 	}
 
 	// 读取颜色
 	if colorAccIdx, ok := gs.Attributes["COLOR_0"]; ok {
 		vertexData.Colors, err = readAccessorAsFloat32(doc, int(colorAccIdx))
 		if err != nil {
-			return nil, nil, fmt.Errorf("读取颜色数据失败: %w", err)
+			return nil, fmt.Errorf("读取颜色数据失败: %w", err)
 		}
 	} else {
-		return nil, nil, fmt.Errorf("missing COLOR_0 attribute")
+		return nil, fmt.Errorf("missing COLOR_0 attribute")
 	}
 
 	// 读取缩放
 	if scaleAccIdx, ok := gs.Attributes["_SCALE"]; ok {
 		vertexData.Scales, err = readAccessorAsFloat32(doc, int(scaleAccIdx))
 		if err != nil {
-			return nil, nil, fmt.Errorf("读取缩放数据失败: %w", err)
+			return nil, fmt.Errorf("读取缩放数据失败: %w", err)
 		}
 	} else {
-		return nil, nil, fmt.Errorf("missing _SCALE attribute")
+		return nil, fmt.Errorf("missing _SCALE attribute")
 	}
 
 	// 读取旋转
 	if rotAccIdx, ok := gs.Attributes["_ROTATION"]; ok {
 		vertexData.Rotations, err = readAccessorAsFloat32(doc, int(rotAccIdx))
 		if err != nil {
-			return nil, nil, fmt.Errorf("读取旋转数据失败: %w", err)
+			return nil, fmt.Errorf("读取旋转数据失败: %w", err)
 		}
 	} else {
-		return nil, nil, fmt.Errorf("missing _ROTATION attribute")
+		return nil, fmt.Errorf("missing _ROTATION attribute")
 	}
 
 	// 验证属性长度一致性
@@ -607,16 +657,7 @@ func ReadGaussianSplatting(doc *gltf.Document, primitive *gltf.Primitive) (*Vert
 	if len(vertexData.Colors)/4 != vertexCount ||
 		len(vertexData.Scales)/3 != vertexCount ||
 		len(vertexData.Rotations)/4 != vertexCount {
-		return nil, nil, fmt.Errorf("顶点属性长度不一致")
-	}
-
-	// 读取球谐系数（如果有）
-	var shCoeffs []float32
-	if gs.SphericalHarmonics != nil {
-		shCoeffs, err = readAccessorAsFloat32(doc, int(*gs.SphericalHarmonics))
-		if err != nil {
-			return nil, nil, fmt.Errorf("读取球谐系数失败: %w", err)
-		}
+		return nil, fmt.Errorf("顶点属性长度不一致")
 	}
 
 	// 对缩放属性进行反归一化（如果需要）
@@ -631,6 +672,8 @@ func ReadGaussianSplatting(doc *gltf.Document, primitive *gltf.Primitive) (*Vert
 						rng := max[j] - min[j]
 						if rng > 0 {
 							vertexData.Scales[i+j] = vertexData.Scales[i+j]*rng + min[j]
+						} else {
+							vertexData.Scales[i+j] = min[j]
 						}
 					}
 				}
@@ -639,9 +682,9 @@ func ReadGaussianSplatting(doc *gltf.Document, primitive *gltf.Primitive) (*Vert
 	}
 
 	// 对数据进行逆处理
-	invertSplatData(vertexData)
+	InvertSplatData(vertexData)
 
-	return vertexData, shCoeffs, nil
+	return vertexData, nil
 }
 
 // readAccessorAsFloat32 从访问器中读取数据并转换为float32切片
@@ -838,32 +881,24 @@ func processShortComponents(buffer []byte, start uint32, stride uint32, compType
 }
 
 // invertSplatData 对读取的高斯泼溅数据进行逆处理
-func invertSplatData(data *VertexData) {
+func InvertSplatData(data *VertexData) {
 	// 1. 颜色逆处理
 	for i := 0; i < len(data.Colors); i += 4 {
-		// RGB分量除以SH0
 		data.Colors[i+0] /= SH0
 		data.Colors[i+1] /= SH0
 		data.Colors[i+2] /= SH0
 
-		// 不透明度逆处理 (logit函数)
 		opacity := data.Colors[i+3]
-		// 添加安全保护，防止无效数学运算
-		if opacity <= 0 {
-			opacity = 1e-6
-		} else if opacity >= 1 {
-			opacity = 1 - 1e-6
-		}
-		data.Colors[i+3] = float32(math.Log(float64(opacity / (1 - opacity))))
+		epsilon := float32(1e-6)
+		clamped := float64(math.Max(float64(epsilon), math.Min(1.0-float64(epsilon), float64(opacity))))
+		data.Colors[i+3] = float32(math.Log(clamped / (1 - clamped)))
 	}
 
-	// 2. 缩放逆处理 (对数) - 添加安全保护
+	// 2. 缩放逆处理 (指数变换)
 	for i := 0; i < len(data.Scales); i++ {
-		if data.Scales[i] <= 0 {
-			data.Scales[i] = 1e-6
-		}
-		data.Scales[i] = float32(math.Log(float64(data.Scales[i])))
+		val := data.Scales[i]
+		data.Scales[i] = float32(math.Exp(float64(val)))
 	}
 
-	// 3. 旋转数据已经是单位四元数，不需要逆处理
+	// 3. 旋转数据保持单位四元数，不需要逆处理
 }
