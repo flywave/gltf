@@ -367,6 +367,7 @@ func encodePrimitive(doc *gltf.Document, encoder *draco.Encoder, primitive *gltf
 	indexAccIdx := primitive.Indices
 	indexAcc := doc.Accessors[*indexAccIdx]
 	faceCOunt := int(indexAcc.Count) / 3
+
 	indexAcc.BufferView = nil
 	positionAccessor, ok := primitive.Attributes["POSITION"]
 	if !ok {
@@ -389,13 +390,16 @@ func encodePrimitive(doc *gltf.Document, encoder *draco.Encoder, primitive *gltf
 	builder := draco.NewMeshBuilder()
 	defer builder.Free()
 	builder.Start(faceCOunt)
+
 	pos := [][3]float32{}
 	for i := 0; i < len(positionData); i += 3 {
 		pos = append(pos, [3]float32{positionData[i], positionData[i+1], positionData[i+2]})
 	}
 	// 2. 添加位置属性
-	builder.SetAttribute(faceCOunt, pos, draco.GAT_POSITION)
+	posIndex := builder.SetAttribute(faceCOunt, pos, draco.GAT_POSITION)
 
+	attrMap := make(map[string]uint32)
+	attrMap["POSITION"] = posIndex
 	// 3. 添加其他属性
 	for name, accessorIdx := range primitive.Attributes {
 		if name == "POSITION" {
@@ -436,18 +440,24 @@ func encodePrimitive(doc *gltf.Document, encoder *draco.Encoder, primitive *gltf
 			switch p := pos.(type) {
 			case [][2]float32:
 				p = append(p, [2]float32{data[i], data[i+1]})
+				pos = p
 			case [][3]float32:
 				p = append(p, [3]float32{data[i], data[i+1], data[i+2]})
+				pos = p
 			case [][3]uint16:
 				p = append(p, [3]uint16{uint16(data[i]), uint16(data[i+1]), uint16(data[i+2])})
+				pos = p
 			case [][3]uint32:
 				p = append(p, [3]uint32{uint32(data[i]), uint32(data[i+1]), uint32(data[i+2])})
+				pos = p
 			}
 		}
-		builder.SetAttribute(faceCOunt, data, attrType)
+		attrMap[name] = builder.SetAttribute(faceCOunt, pos, attrType)
 	}
 
 	mesh := builder.GetMesh()
+	indexs2 := []uint32{}
+	mesh.Faces(indexs2)
 
 	// 4. 配置编码参数
 	applyEncoderOptions(encoder, options) // 新增选项配置
@@ -482,19 +492,7 @@ func encodePrimitive(doc *gltf.Document, encoder *draco.Encoder, primitive *gltf
 	// 6. 构建扩展对象
 	ext := &DracoExtension{
 		BufferView: viewIndex,
-		Attributes: make(map[string]uint32),
-	}
-
-	// 9. 映射属性ID
-	for name := range primitive.Attributes {
-		attrType := dracoAttributeType(name)
-		if attrType == draco.GAT_INVALID {
-			continue
-		}
-
-		if attrID := mesh.NamedAttributeID(attrType); attrID != -1 {
-			ext.Attributes[name] = uint32(attrID)
-		}
+		Attributes: attrMap,
 	}
 
 	// 10. 更新图元
@@ -595,13 +593,15 @@ func readComponent(data []byte, compType gltf.ComponentType) float32 {
 	case gltf.ComponentFloat:
 		return math.Float32frombits(binary.LittleEndian.Uint32(data))
 	case gltf.ComponentUbyte:
-		return float32(data[0]) / 255.0
+		return float32(data[0])
 	case gltf.ComponentByte:
-		return float32(int8(data[0])) / 127.0
+		return float32(int8(data[0]))
 	case gltf.ComponentUshort:
-		return float32(binary.LittleEndian.Uint16(data)) / 65535.0
+		return float32(binary.LittleEndian.Uint16(data))
 	case gltf.ComponentShort:
-		return float32(int16(binary.LittleEndian.Uint16(data))) / 32767.0
+		return float32(int16(binary.LittleEndian.Uint16(data)))
+	case gltf.ComponentUint:
+		return float32(binary.LittleEndian.Uint32(data))
 	default:
 		return 0
 	}
