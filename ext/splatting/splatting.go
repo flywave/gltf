@@ -71,62 +71,6 @@ type VertexData struct {
 	Rotations []float32
 }
 
-// PrepareSplatData 根据规范转换原始数据
-func PrepareSplatData(data *VertexData) {
-	// 1. 颜色处理 (RGB 分量乘以 SH0 常数)
-	for i := 0; i < len(data.Colors); i += 4 {
-		if i+3 >= len(data.Colors) {
-			break
-		}
-
-		data.Colors[i+0] *= SH0
-		data.Colors[i+1] *= SH0
-		data.Colors[i+2] *= SH0
-
-		// 应用不透明度 sigmoid
-		opacity := data.Colors[i+3]
-		data.Colors[i+3] = 1 / (1 + float32(math.Exp(-float64(opacity))))
-	}
-
-	// 2. 缩放处理 (带符号的对数变换)
-	for i := 0; i < len(data.Scales); i++ {
-		// 处理接近零的值
-		val := data.Scales[i]
-		if math.Abs(float64(val)) < 1e-6 {
-			if val < 0 {
-				val = -1e-6
-			} else {
-				val = 1e-6
-			}
-		}
-
-		// 保留符号的对数变换
-		sign := float32(1.0)
-		if val < 0 {
-			sign = -1.0
-		}
-		absVal := math.Abs(float64(val))
-		data.Scales[i] = sign * float32(math.Log(absVal))
-	}
-
-	// 3. 旋转归一化 (处理零旋转)
-	for i := 0; i < len(data.Rotations); i += 4 {
-		q := data.Rotations[i : i+4]
-		lenSq := q[0]*q[0] + q[1]*q[1] + q[2]*q[2] + q[3]*q[3]
-
-		if lenSq > 1e-6 { // 只对非零向量归一化
-			lenInv := 1 / float32(math.Sqrt(float64(lenSq)))
-			q[0] *= lenInv
-			q[1] *= lenInv
-			q[2] *= lenInv
-			q[3] *= lenInv
-		} else {
-			// 设置默认单位四元数
-			q[0], q[1], q[2], q[3] = 1, 0, 0, 0
-		}
-	}
-}
-
 // clamp 确保值在指定范围内
 func clamp(v, min, max float32) float32 {
 	if v < min {
@@ -151,14 +95,29 @@ func ValidateRotation(rotations []float32) error {
 	}
 	return nil
 }
-
 func WireGaussianSplatting(
 	doc *gltf.Document,
 	vertexData *VertexData,
 	compress bool,
 ) (*GaussianSplatting, error) {
-	PrepareSplatData(vertexData)
 	vertexCount := len(vertexData.Positions) / 3
+
+	// 1. 旋转归一化 (处理零旋转)
+	for i := 0; i < len(vertexData.Rotations); i += 4 {
+		q := vertexData.Rotations[i : i+4]
+		lenSq := q[0]*q[0] + q[1]*q[1] + q[2]*q[2] + q[3]*q[3]
+
+		if lenSq > 1e-6 { // 只对非零向量归一化
+			lenInv := 1 / float32(math.Sqrt(float64(lenSq)))
+			q[0] *= lenInv
+			q[1] *= lenInv
+			q[2] *= lenInv
+			q[3] *= lenInv
+		} else {
+			// 设置默认单位四元数
+			q[0], q[1], q[2], q[3] = 1, 0, 0, 0
+		}
+	}
 
 	// 添加必要的扩展声明
 	if compress {
@@ -267,7 +226,6 @@ func WireGaussianSplatting(
 				compType:   gltf.ComponentFloat,
 				dataType:   gltf.AccessorVec4,
 				normalized: false,
-				filter:     meshopt.FilterQuaternion,
 			},
 			{
 				name:       "_SCALE",
@@ -275,7 +233,6 @@ func WireGaussianSplatting(
 				compType:   gltf.ComponentFloat,
 				dataType:   gltf.AccessorVec3,
 				normalized: false,
-				filter:     meshopt.FilterExponential,
 			},
 		}...)
 	}
@@ -284,13 +241,6 @@ func WireGaussianSplatting(
 
 	// 为每个属性单独创建bufferView和accessor
 	for _, attr := range attributes {
-		// 量化位置到[0,2047]范围
-		if attr.name == "POSITION" {
-			for i := range attr.data {
-				attr.data[i] = clamp(attr.data[i], attr.min[i/3], attr.max[i/3])
-			}
-		}
-
 		// 计算组件大小和步长
 		compSize := componentSize(attr.compType)
 		comps := int(attr.dataType.Components())
@@ -309,26 +259,39 @@ func WireGaussianSplatting(
 			for j := 0; j < comps; j++ {
 				val := attr.data[idx+j]
 
-				// 特殊处理
-				switch attr.name {
-				case "POSITION":
-					// 映射到量化范围
-					rng := attr.max[j] - attr.min[j]
-					if rng == 0 {
-						val = 0
-					} else {
-						val = (val - attr.min[j]) / rng
-					}
-				}
-
 				// 写入数据
 				switch attr.compType {
 				case gltf.ComponentUbyte:
-					buf.WriteByte(uint8(val * 255))
+					// 颜色需要映射到[0,255]并应用SH0逆变换
+					if attr.name == "COLOR_0" {
+						// 只对RGB分量应用SH0逆变换
+						val = clamp(val, 0, 1) * 255
+					}
+					buf.WriteByte(uint8(val))
 				case gltf.ComponentUshort:
-					binary.Write(buf, binary.LittleEndian, uint16(val*65535))
+					// 位置需要映射到[0,65535]并应用范围缩放
+					if attr.name == "POSITION" {
+						// 获取当前维度的索引 (0=x, 1=y, 2=z)
+						dim := j
+						// 映射到[0,1]范围
+						rng := attr.max[dim] - attr.min[dim]
+						if rng <= 0 {
+							val = 0
+						} else {
+							val = (val - attr.min[dim]) / rng
+						}
+						// 映射到[0,65535]
+						val = val * 65535
+						val = float32(math.Round(float64(val)))
+						val = clamp(val, 0, 65535)
+					}
+					binary.Write(buf, binary.LittleEndian, uint16(val))
 				case gltf.ComponentShort:
-					binary.Write(buf, binary.LittleEndian, int16(val*32767))
+					// 旋转需要映射到[-32767,32767]
+					if attr.name == "_ROTATION" {
+						val = clamp(val, -1, 1) * 32767
+					}
+					binary.Write(buf, binary.LittleEndian, int16(val))
 				default:
 					binary.Write(buf, binary.LittleEndian, val)
 				}
@@ -508,9 +471,8 @@ func ReadGaussianSplatting(doc *gltf.Document, primitive *gltf.Primitive) (*Vert
 			for i := 0; i < len(vertexData.Positions); i += 3 {
 				for j := 0; j < 3; j++ {
 					v := vertexData.Positions[i+j]
-					// 反归一化：[0, 65535] → [min, max]
-					v = v/65535*(max[j]-min[j]) + min[j]
-					vertexData.Positions[i+j] = v / 65535
+					v = v/65535*(max[j]-min[j]) + min[j] // <--- 这是对的，如果 v 是 [0, 65535]
+					vertexData.Positions[i+j] = v
 				}
 			}
 		}
@@ -520,9 +482,17 @@ func ReadGaussianSplatting(doc *gltf.Document, primitive *gltf.Primitive) (*Vert
 
 	// 读取颜色
 	if colorAccIdx, ok := primitive.Attributes["COLOR_0"]; ok {
+		colorAccessor := doc.Accessors[colorAccIdx]
+
 		vertexData.Colors, err = readAccessorAsFloat32(doc, int(colorAccIdx))
 		if err != nil {
 			return nil, fmt.Errorf("读取颜色数据失败: %w", err)
+		}
+		if colorAccessor.ComponentType == gltf.ComponentUbyte {
+			for i := 0; i < len(vertexData.Colors); i++ {
+				v := vertexData.Colors[i]
+				vertexData.Colors[i] = v * 255
+			}
 		}
 	} else {
 		return nil, fmt.Errorf("missing COLOR_0 attribute")
@@ -589,9 +559,6 @@ func ReadGaussianSplatting(doc *gltf.Document, primitive *gltf.Primitive) (*Vert
 			}
 		}
 	}
-
-	// 对数据进行逆处理
-	InvertSplatData(vertexData)
 
 	return vertexData, nil
 }
@@ -729,54 +696,64 @@ func processByteComponents(buffer []byte, start uint32, stride uint32, compType 
 // 处理短整型组件 (使用批量转换)
 func processShortComponents(buffer []byte, start uint32, stride uint32, compType gltf.ComponentType, normalized bool, compCount int, count uint32, out []float32) {
 	divisor := float32(1.0)
+	readAsUnsigned := false // 新增标志
+
 	if normalized {
 		divisor = 65535.0
 		if compType == gltf.ComponentShort {
 			divisor = 32767.0
 		}
-	}
-
-	// 预计算所有short值
-	shorts := make([]int16, count*uint32(compCount))
-	// 修复：将 startOffset 改为函数参数中的 start
-	if err := binary.Read(bytes.NewReader(buffer[start:]), binary.LittleEndian, shorts); err == nil {
-		for i, v := range shorts {
-			out[i] = float32(v) / divisor
-		}
-		return
-	}
-
-	// 回退逐元素处理
-	for i := uint32(0); i < count; i++ {
-		offset := start + i*stride
-		for c := 0; c < compCount; c++ {
-			idx := i*uint32(compCount) + uint32(c)
-			byteOffset := offset + uint32(c*2)
-			val := int16(binary.LittleEndian.Uint16(buffer[byteOffset:]))
-			out[idx] = float32(val) / divisor
+	} else {
+		// 当 normalized=false 时，对于 ComponentUshort，我们希望返回 [0, 65535] 范围的 float32
+		// 对于 ComponentShort，我们希望返回 [-32767, 32767] 范围的 float32
+		// 但 processShortComponents 主要负责类型转换和归一化。
+		// 最简单的方法是区分 ComponentUshort 和 ComponentShort 的读取方式。
+		// 如果 normalized=false，我们不应该除以任何 divisor，直接返回原始 float32 值。
+		// 但是 divisor=1.0 已经实现了这一点。
+		// 关键是 ComponentUshort 应该被读取为 uint16，而不是 int16。
+		if compType == gltf.ComponentUshort {
+			readAsUnsigned = true // 标记需要读取为 uint16
 		}
 	}
-}
 
-// invertSplatData 对读取的高斯泼溅数据进行逆处理
-func InvertSplatData(data *VertexData) {
-	// 1. 颜色逆处理
-	for i := 0; i < len(data.Colors); i += 4 {
-		data.Colors[i+0] /= SH0
-		data.Colors[i+1] /= SH0
-		data.Colors[i+2] /= SH0
-
-		opacity := data.Colors[i+3]
-		epsilon := float32(1e-6)
-		clamped := float64(math.Max(float64(epsilon), math.Min(1.0-float64(epsilon), float64(opacity))))
-		data.Colors[i+3] = float32(math.Log(clamped / (1 - clamped)))
+	// 根据类型选择读取方式
+	if compType == gltf.ComponentUshort && readAsUnsigned {
+		// 处理 uint16
+		uints := make([]uint16, count*uint32(compCount))
+		if err := binary.Read(bytes.NewReader(buffer[start:]), binary.LittleEndian, uints); err == nil {
+			for i, v := range uints {
+				out[i] = float32(v) / divisor // v 是 uint16, 转换为 float32
+			}
+			return
+		}
+		// 回退逐元素处理 (处理 uint16)
+		for i := uint32(0); i < count; i++ {
+			offset := start + i*stride
+			for c := 0; c < compCount; c++ {
+				idx := i*uint32(compCount) + uint32(c)
+				byteOffset := offset + uint32(c*2)
+				val := binary.LittleEndian.Uint16(buffer[byteOffset:]) // 直接读取 uint16
+				out[idx] = float32(val) / divisor                      // 转换为 float32 并除以 divisor
+			}
+		}
+	} else {
+		// 处理 int16 (ComponentShort 或 normalized=true 的 ComponentUshort)
+		ints := make([]int16, count*uint32(compCount))
+		if err := binary.Read(bytes.NewReader(buffer[start:]), binary.LittleEndian, ints); err == nil {
+			for i, v := range ints {
+				out[i] = float32(v) / divisor // v 是 int16, 转换为 float32
+			}
+			return
+		}
+		// 回退逐元素处理 (处理 int16)
+		for i := uint32(0); i < count; i++ {
+			offset := start + i*stride
+			for c := 0; c < compCount; c++ {
+				idx := i*uint32(compCount) + uint32(c)
+				byteOffset := offset + uint32(c*2)
+				val := int16(binary.LittleEndian.Uint16(buffer[byteOffset:])) // 读取为 uint16 再转 int16
+				out[idx] = float32(val) / divisor                             // 转换为 float32 并除以 divisor
+			}
+		}
 	}
-
-	// 2. 缩放逆处理 (指数变换)
-	for i := 0; i < len(data.Scales); i++ {
-		val := data.Scales[i]
-		data.Scales[i] = float32(math.Exp(float64(val)))
-	}
-
-	// 3. 旋转数据保持单位四元数，不需要逆处理
 }
