@@ -8,8 +8,8 @@ import (
 )
 
 const (
-	// ExtensionName defines the EXT_bim4d_metadata unique key
-	ExtensionName = "EXT_bim4d_metadata"
+	// ExtensionName defines the FLYWAVE_bim4d_metadata unique key
+	ExtensionName = "FLYWAVE_bim4d_metadata"
 )
 
 func init() {
