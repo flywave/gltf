@@ -7,6 +7,9 @@ import (
 	"fmt"
 
 	"github.com/flywave/gltf"
+	"github.com/flywave/go3d/mat4"
+	"github.com/flywave/go3d/quaternion"
+	"github.com/flywave/go3d/vec3"
 )
 
 const ExtensionName = "EXT_mesh_gpu_instancing"
@@ -63,6 +66,84 @@ type InstanceData struct {
 	Translations [][3]float32
 	Rotations    [][4]float32
 	Scales       [][3]float32
+}
+
+// 新增：获取实例数量
+func (data *InstanceData) InstanceCount() int {
+	counts := []int{
+		len(data.Translations),
+		len(data.Rotations),
+		len(data.Scales),
+	}
+
+	max := 0
+	for _, c := range counts {
+		if c > max {
+			max = c
+		}
+	}
+	return max
+}
+
+// 新增：将InstanceData转换为4x4变换矩阵数组
+func (data *InstanceData) ToMat4() ([]mat4.T, error) {
+	count := data.InstanceCount()
+	if count == 0 {
+		return nil, fmt.Errorf("empty instance data")
+	}
+
+	matrices := make([]mat4.T, count)
+	for i := 0; i < count; i++ {
+		// 获取各组件值（带默认值）
+		var pos vec3.T
+		if i < len(data.Translations) {
+			pos = vec3.T(data.Translations[i])
+		} else {
+			pos = vec3.T{0, 0, 0}
+		}
+
+		var quat quaternion.T
+		if i < len(data.Rotations) {
+			q := data.Rotations[i]
+			quat = quaternion.T{q[0], q[1], q[2], q[3]}
+		} else {
+			quat = quaternion.Ident
+		}
+
+		var scale vec3.T
+		if i < len(data.Scales) {
+			scale = vec3.T(data.Scales[i])
+		} else {
+			scale = vec3.T{1, 1, 1}
+		}
+
+		// 直接调用Compose组合矩阵
+		matrices[i] = *mat4.Compose(&pos, &quat, &scale)
+	}
+	return matrices, nil
+}
+
+// 新增：从4x4矩阵数组转换到InstanceData
+func FromMat4(matrices []mat4.T) (*InstanceData, error) {
+	data := &InstanceData{}
+	for _, m := range matrices {
+		// 分解矩阵
+		pos, quat, scale := mat4.Decompose(&m)
+
+		// 处理平移
+		data.Translations = append(data.Translations, [3]float32{pos[0], pos[1], pos[2]})
+
+		// 处理旋转
+		data.Rotations = append(data.Rotations, [4]float32{
+			quat[0], quat[1], quat[2], quat[3],
+		})
+
+		// 处理缩放
+		data.Scales = append(data.Scales, [3]float32{
+			scale[0], scale[1], scale[2],
+		})
+	}
+	return data, nil
 }
 
 func WriteInstancing(doc *gltf.Document, data *InstanceData, config *InstanceConfig) error {
@@ -453,14 +534,14 @@ func createVectorAccessor(
 }
 
 // 转换float32切片为字节数组
-func flattenFloat32Slice(slice interface{}, dim int) []byte {
+func flattenFloat32Slice(slice interface{}, _ int) []byte {
 	buf := bytes.NewBuffer(nil)
 	binary.Write(buf, binary.LittleEndian, slice)
 	return buf.Bytes()
 }
 
 // 转换int8切片为字节数组 (用于ROTATION)
-func flattenInt8Slice(slice [][4]int8, dim int) []byte {
+func flattenInt8Slice(slice [][4]int8, _ int) []byte {
 	buf := bytes.NewBuffer(nil)
 	for _, v := range slice {
 		binary.Write(buf, binary.LittleEndian, v[:])
@@ -469,7 +550,7 @@ func flattenInt8Slice(slice [][4]int8, dim int) []byte {
 }
 
 // 转换int16切片为字节数组 (用于ROTATION)
-func flattenInt16Slice(slice [][4]int16, dim int) []byte {
+func flattenInt16Slice(slice [][4]int16, _ int) []byte {
 	buf := bytes.NewBuffer(nil)
 	for _, v := range slice {
 		binary.Write(buf, binary.LittleEndian, v[:])
