@@ -30,22 +30,24 @@ func init() {
 func Unmarshal(data []byte) (interface{}, error) {
 	ext := &QuantizationExtension{}
 	if err := json.Unmarshal(data, ext); err != nil {
-		return nil, fmt.Errorf("KHR_mesh_quantization解析失败: %w", err)
+		return nil, fmt.Errorf("KHR_mesh_quantization unmarshal failed: %w", err)
 	}
 	return ext, nil
 }
 
-// 主解量化函数
-func DequantizeMeshData(doc *gltf.Document) error {
-	// 记录是否处理了任何扩展
-	processedExtensions := false
+type Dequantizer struct {
+	doc *gltf.Document
+}
 
-	for m := range doc.Meshes {
-		mesh := doc.Meshes[m]
-		for p := range mesh.Primitives {
-			primitive := mesh.Primitives[p]
+func NewDequantizer(doc *gltf.Document) *Dequantizer {
+	return &Dequantizer{doc: doc}
+}
 
-			// 获取扩展参数
+func (d *Dequantizer) Process() error {
+	processed := false
+
+	for _, mesh := range d.doc.Meshes {
+		for _, primitive := range mesh.Primitives {
 			extValue, exists := primitive.Extensions[ExtensionName]
 			if !exists {
 				continue
@@ -53,17 +55,16 @@ func DequantizeMeshData(doc *gltf.Document) error {
 
 			ext, ok := extValue.(*QuantizationExtension)
 			if !ok {
-				return fmt.Errorf("无效的KHR_mesh_quantization扩展格式")
+				return fmt.Errorf("invalid quantization extension format")
 			}
 
-			processedExtensions = true
+			processed = true
 
-			// 处理所有属性
-			for attr, accessorIndex := range primitive.Attributes {
-				if accessorIndex >= uint32(len(doc.Accessors)) {
+			for attr, accessorIdx := range primitive.Attributes {
+				if accessorIdx >= uint32(len(d.doc.Accessors)) {
 					continue
 				}
-				accessor := doc.Accessors[accessorIndex]
+				accessor := d.doc.Accessors[accessorIdx]
 
 				// 跳过浮点类型和JOINTS属性
 				if accessor.ComponentType == gltf.ComponentFloat ||
@@ -71,80 +72,53 @@ func DequantizeMeshData(doc *gltf.Document) error {
 					continue
 				}
 
-				// 获取量化位数
-				bits := getQuantizationBits(attr, ext)
+				bits := d.getQuantizationBits(attr, ext)
 				if bits == 0 {
 					continue
 				}
 
-				newAccessorIndex, err := dequantizeAccessor(doc, accessor, bits)
+				newIdx, err := d.dequantizeAccessor(accessor, bits)
 				if err != nil {
-					return fmt.Errorf("解量化属性 %s 失败: %w", attr, err)
+					return fmt.Errorf("dequantize attribute %s failed: %w", attr, err)
 				}
 
-				// 更新属性索引
-				primitive.Attributes[attr] = newAccessorIndex
+				primitive.Attributes[attr] = newIdx
 			}
 
-			// 移除primitive的扩展
 			delete(primitive.Extensions, ExtensionName)
 		}
 	}
 
-	// 移除顶级扩展声明
-	if processedExtensions {
-		removeTopLevelExtension(doc)
+	if processed {
+		d.removeTopLevelExtension()
 	}
 
 	return nil
 }
 
-// 获取属性的量化位数
-func getQuantizationBits(attributeName string, ext *QuantizationExtension) uint8 {
+func (d *Dequantizer) getQuantizationBits(attributeName string, ext *QuantizationExtension) uint8 {
 	switch {
 	case strings.HasPrefix(attributeName, "POSITION"):
-		if ext.PositionBits > 0 {
-			return ext.PositionBits
-		}
-		return 12 // 默认值
+		return firstNonZero(ext.PositionBits, 12)
 	case strings.HasPrefix(attributeName, "NORMAL"):
-		if ext.NormalBits > 0 {
-			return ext.NormalBits
-		}
-		return 10 // 默认值
+		return firstNonZero(ext.NormalBits, 10)
 	case strings.HasPrefix(attributeName, "TANGENT"):
-		if ext.TangentBits > 0 {
-			return ext.TangentBits
-		}
-		return 10 // 默认值
+		return firstNonZero(ext.TangentBits, 10)
 	case strings.HasPrefix(attributeName, "TEXCOORD"):
-		if ext.TexCoordBits > 0 {
-			return ext.TexCoordBits
-		}
-		return 12 // 默认值
+		return firstNonZero(ext.TexCoordBits, 12)
 	case strings.HasPrefix(attributeName, "COLOR"):
-		if ext.ColorBits > 0 {
-			return ext.ColorBits
-		}
-		return 8 // 默认值
+		return firstNonZero(ext.ColorBits, 8)
 	case strings.HasPrefix(attributeName, "WEIGHTS"):
-		if ext.WeightBits > 0 {
-			return ext.WeightBits
-		}
-		return 8 // 默认值
+		return firstNonZero(ext.WeightBits, 8)
 	default:
-		if ext.GenericBits > 0 {
-			return ext.GenericBits
-		}
-		return 8 // 默认值
+		return firstNonZero(ext.GenericBits, 8)
 	}
 }
 
-// 解量化单个访问器
-func dequantizeAccessor(doc *gltf.Document, accessor *gltf.Accessor, bits uint8) (uint32, error) {
+func (d *Dequantizer) dequantizeAccessor(accessor *gltf.Accessor, bits uint8) (uint32, error) {
 	// 验证访问器数据
 	if accessor.Min == nil || accessor.Max == nil {
-		return 0, fmt.Errorf("访问器缺少min/max值")
+		return 0, fmt.Errorf("accessor missing min/max values")
 	}
 
 	minValues := accessor.Min
@@ -159,28 +133,28 @@ func dequantizeAccessor(doc *gltf.Document, accessor *gltf.Accessor, bits uint8)
 	}[accessor.Type]
 
 	if !ok || componentCount < 1 {
-		return 0, fmt.Errorf("不支持的访问器类型: %s", accessor.Type)
+		return 0, fmt.Errorf("unsupported accessor type: %s", accessor.Type)
 	}
 
 	// 验证min/max长度
 	if len(minValues) < componentCount || len(maxValues) < componentCount {
-		return 0, fmt.Errorf("min/max值数量与组件数量不匹配")
+		return 0, fmt.Errorf("min/max length mismatch")
 	}
 
 	// 获取缓冲视图和缓冲区
 	if accessor.BufferView == nil {
-		return 0, fmt.Errorf("访问器缺少缓冲视图")
+		return 0, fmt.Errorf("accessor missing buffer view")
 	}
 	bvIndex := *accessor.BufferView
-	if bvIndex >= uint32(len(doc.BufferViews)) {
-		return 0, fmt.Errorf("缓冲视图索引越界")
+	if bvIndex >= uint32(len(d.doc.BufferViews)) {
+		return 0, fmt.Errorf("buffer view index out of range")
 	}
-	bv := doc.BufferViews[bvIndex]
+	bv := d.doc.BufferViews[bvIndex]
 
-	if bv.Buffer >= uint32(len(doc.Buffers)) {
-		return 0, fmt.Errorf("缓冲区索引越界")
+	if bv.Buffer >= uint32(len(d.doc.Buffers)) {
+		return 0, fmt.Errorf("buffer index out of range")
 	}
-	buffer := doc.Buffers[bv.Buffer]
+	buffer := d.doc.Buffers[bv.Buffer]
 
 	// 计算数据范围和偏移
 	start := bv.ByteOffset + accessor.ByteOffset
@@ -191,18 +165,27 @@ func dequantizeAccessor(doc *gltf.Document, accessor *gltf.Accessor, bits uint8)
 
 	// 验证数据范围
 	count := accessor.Count
-	end := start + (count-1)*stride + uint32(gltf.SizeOfComponent(accessor.ComponentType))*uint32(componentCount)
+	elementSize := uint32(gltf.SizeOfComponent(accessor.ComponentType)) * uint32(componentCount)
+	end := start + (count-1)*stride + elementSize
 	if end > uint32(len(buffer.Data)) {
-		return 0, fmt.Errorf("访问器数据超出缓冲区范围")
+		return 0, fmt.Errorf("accessor data exceeds buffer range")
 	}
 
 	// 准备浮点数据存储
 	floatData := make([]float32, count*uint32(componentCount))
 
-	// 解量化数据
+	// 解量化参数
 	maxInteger := float32(math.Pow(2, float64(bits)) - 1)
-	componentSize := gltf.SizeOfComponent(accessor.ComponentType)
+	ranges := make([]float32, componentCount)
+	for i := 0; i < componentCount; i++ {
+		ranges[i] = maxValues[i] - minValues[i]
+		if ranges[i] == 0 {
+			ranges[i] = 1e-6 // 避免除以零
+		}
+	}
 
+	// 解量化数据
+	componentSize := gltf.SizeOfComponent(accessor.ComponentType)
 	for i := uint32(0); i < count; i++ {
 		offset := start + i*stride
 
@@ -217,9 +200,9 @@ func dequantizeAccessor(doc *gltf.Document, accessor *gltf.Accessor, bits uint8)
 				return 0, err
 			}
 
-			// 应用解量化公式: value = min + (max - min) * (raw / maxInteger)
-			normalized := float32(rawValue) / maxInteger
-			floatValue := minValues[c] + (maxValues[c]-minValues[c])*normalized
+			// 应用解量化公式: value = min + (raw / maxInteger) * range
+			normalized := rawValue / maxInteger
+			floatValue := minValues[c] + normalized*ranges[c]
 
 			// 存储解量化后的值
 			idx := i*uint32(componentCount) + uint32(c)
@@ -235,8 +218,8 @@ func dequantizeAccessor(doc *gltf.Document, accessor *gltf.Accessor, bits uint8)
 		ByteLength: uint32(len(byteData)),
 		Data:       byteData,
 	}
-	newBufferIndex := uint32(len(doc.Buffers))
-	doc.Buffers = append(doc.Buffers, &newBuffer)
+	newBufferIndex := uint32(len(d.doc.Buffers))
+	d.doc.Buffers = append(d.doc.Buffers, &newBuffer)
 
 	// 创建新缓冲视图
 	newBufferView := gltf.BufferView{
@@ -246,8 +229,8 @@ func dequantizeAccessor(doc *gltf.Document, accessor *gltf.Accessor, bits uint8)
 		ByteStride: uint32(componentCount * 4), // 每个浮点数4字节
 		Target:     bv.Target,
 	}
-	newBufferViewIndex := uint32(len(doc.BufferViews))
-	doc.BufferViews = append(doc.BufferViews, &newBufferView)
+	newBufferViewIndex := uint32(len(d.doc.BufferViews))
+	d.doc.BufferViews = append(d.doc.BufferViews, &newBufferView)
 
 	// 创建新访问器
 	newAccessor := &gltf.Accessor{
@@ -256,99 +239,44 @@ func dequantizeAccessor(doc *gltf.Document, accessor *gltf.Accessor, bits uint8)
 		ComponentType: gltf.ComponentFloat,
 		Count:         accessor.Count,
 		Type:          accessor.Type,
-		Min:           minValues, // 保持原始min/max
+		Min:           minValues,
 		Max:           maxValues,
 		Normalized:    false,
 	}
 
 	// 添加新访问器并返回索引
-	doc.Accessors = append(doc.Accessors, newAccessor)
-	return uint32(len(doc.Accessors) - 1), nil
+	d.doc.Accessors = append(d.doc.Accessors, newAccessor)
+	return uint32(len(d.doc.Accessors) - 1), nil
 }
 
-// 从字节数据读取组件值
-func readComponent(data []byte, componentType gltf.ComponentType, normalized bool) (float32, error) {
-	switch componentType {
-	case gltf.ComponentByte:
-		if len(data) < 1 {
-			return 0, fmt.Errorf("数据不足")
-		}
-		v := int8(data[0])
-		if normalized {
-			return float32(v) / 127.0, nil
-		}
-		return float32(v), nil
-
-	case gltf.ComponentUbyte:
-		if len(data) < 1 {
-			return 0, fmt.Errorf("数据不足")
-		}
-		v := data[0]
-		if normalized {
-			return float32(v) / 255.0, nil
-		}
-		return float32(v), nil
-
-	case gltf.ComponentShort:
-		if len(data) < 2 {
-			return 0, fmt.Errorf("数据不足")
-		}
-		v := int16(binary.LittleEndian.Uint16(data[0:2]))
-		if normalized {
-			return float32(v) / 32767.0, nil
-		}
-		return float32(v), nil
-
-	case gltf.ComponentUshort:
-		if len(data) < 2 {
-			return 0, fmt.Errorf("数据不足")
-		}
-		v := binary.LittleEndian.Uint16(data[0:2])
-		if normalized {
-			return float32(v) / 65535.0, nil
-		}
-		return float32(v), nil
-
-	default:
-		return 0, fmt.Errorf("不支持的组件类型: %d", componentType)
-	}
-}
-
-// 浮点数切片转字节切片
-func float32ToBytes(data []float32) []byte {
-	bytes := make([]byte, len(data)*4)
-	for i, f := range data {
-		u := math.Float32bits(f)
-		binary.LittleEndian.PutUint32(bytes[i*4:], u)
-	}
-	return bytes
-}
-
-// 移除顶级扩展声明
-func removeTopLevelExtension(doc *gltf.Document) {
+func (d *Dequantizer) removeTopLevelExtension() {
 	// 从扩展中移除
-	delete(doc.Extensions, ExtensionName)
+	delete(d.doc.Extensions, ExtensionName)
 
 	// 从已使用扩展中移除
-	for i, ext := range doc.ExtensionsUsed {
+	for i, ext := range d.doc.ExtensionsUsed {
 		if ext == ExtensionName {
-			doc.ExtensionsUsed = append(doc.ExtensionsUsed[:i], doc.ExtensionsUsed[i+1:]...)
+			d.doc.ExtensionsUsed = append(d.doc.ExtensionsUsed[:i], d.doc.ExtensionsUsed[i+1:]...)
 			break
 		}
 	}
 
 	// 从必需扩展中移除
-	for i, ext := range doc.ExtensionsRequired {
+	for i, ext := range d.doc.ExtensionsRequired {
 		if ext == ExtensionName {
-			doc.ExtensionsRequired = append(doc.ExtensionsRequired[:i], doc.ExtensionsRequired[i+1:]...)
+			d.doc.ExtensionsRequired = append(d.doc.ExtensionsRequired[:i], d.doc.ExtensionsRequired[i+1:]...)
 			break
 		}
 	}
 }
 
-// 主量化压缩函数
-func QuantizeMeshData(doc *gltf.Document, config *QuantizationExtension) error {
-	// 确保配置有效
+// ====================== 量化处理器 ======================
+type Quantizer struct {
+	doc    *gltf.Document
+	config *QuantizationExtension
+}
+
+func NewQuantizer(doc *gltf.Document, config *QuantizationExtension) *Quantizer {
 	if config == nil {
 		config = &QuantizationExtension{
 			PositionBits: 12,
@@ -360,45 +288,21 @@ func QuantizeMeshData(doc *gltf.Document, config *QuantizationExtension) error {
 			GenericBits:  8,
 		}
 	}
+	return &Quantizer{doc: doc, config: config}
+}
 
-	// 添加扩展声明
-	if doc.ExtensionsUsed == nil {
-		doc.ExtensionsUsed = []string{}
-	}
-	if !contains(doc.ExtensionsUsed, ExtensionName) {
-		doc.ExtensionsUsed = append(doc.ExtensionsUsed, ExtensionName)
-	}
+func (q *Quantizer) Process() error {
+	q.ensureExtensionDeclared()
 
-	if doc.ExtensionsRequired == nil {
-		doc.ExtensionsRequired = []string{}
-	}
-	if !contains(doc.ExtensionsRequired, ExtensionName) {
-		doc.ExtensionsRequired = append(doc.ExtensionsRequired, ExtensionName)
-	}
+	for _, mesh := range q.doc.Meshes {
+		for _, primitive := range mesh.Primitives {
+			primitiveExt := *q.config // 克隆配置
 
-	// 遍历所有网格和图元
-	for m := range doc.Meshes {
-		mesh := doc.Meshes[m]
-		for p := range mesh.Primitives {
-			primitive := mesh.Primitives[p]
-
-			// 为primitive创建量化扩展
-			primitiveExt := &QuantizationExtension{
-				PositionBits: config.PositionBits,
-				NormalBits:   config.NormalBits,
-				TangentBits:  config.TangentBits,
-				TexCoordBits: config.TexCoordBits,
-				ColorBits:    config.ColorBits,
-				WeightBits:   config.WeightBits,
-				GenericBits:  config.GenericBits,
-			}
-
-			// 处理所有属性
-			for attr, accessorIndex := range primitive.Attributes {
-				if accessorIndex >= uint32(len(doc.Accessors)) {
+			for attr, accessorIdx := range primitive.Attributes {
+				if accessorIdx >= uint32(len(q.doc.Accessors)) {
 					continue
 				}
-				accessor := doc.Accessors[accessorIndex]
+				accessor := q.doc.Accessors[accessorIdx]
 
 				// 跳过非浮点类型和JOINTS属性
 				if accessor.ComponentType != gltf.ComponentFloat ||
@@ -406,8 +310,7 @@ func QuantizeMeshData(doc *gltf.Document, config *QuantizationExtension) error {
 					continue
 				}
 
-				// 获取量化位数
-				bits := getQuantizationBits(attr, primitiveExt)
+				bits := q.getQuantizationBits(attr, &primitiveExt)
 				if bits == 0 {
 					continue
 				}
@@ -418,31 +321,59 @@ func QuantizeMeshData(doc *gltf.Document, config *QuantizationExtension) error {
 					componentType = gltf.ComponentUshort
 				}
 
-				newAccessorIndex, err := quantizeAccessor(doc, accessor, bits, componentType)
+				newIdx, err := q.quantizeAccessor(accessor, bits, componentType)
 				if err != nil {
-					return fmt.Errorf("量化属性 %s 失败: %w", attr, err)
+					return fmt.Errorf("quantize attribute %s failed: %w", attr, err)
 				}
 
-				// 更新属性索引
-				primitive.Attributes[attr] = newAccessorIndex
+				primitive.Attributes[attr] = newIdx
 			}
 
 			// 添加扩展到primitive
 			if primitive.Extensions == nil {
 				primitive.Extensions = make(map[string]interface{})
 			}
-			primitive.Extensions[ExtensionName] = primitiveExt
+			primitive.Extensions[ExtensionName] = &primitiveExt
 		}
 	}
 
 	return nil
 }
 
-// 量化单个访问器
-func quantizeAccessor(doc *gltf.Document, accessor *gltf.Accessor, bits uint8, componentType gltf.ComponentType) (uint32, error) {
+func (q *Quantizer) ensureExtensionDeclared() {
+	// 添加扩展声明
+	if !contains(q.doc.ExtensionsUsed, ExtensionName) {
+		q.doc.ExtensionsUsed = append(q.doc.ExtensionsUsed, ExtensionName)
+	}
+
+	if !contains(q.doc.ExtensionsRequired, ExtensionName) {
+		q.doc.ExtensionsRequired = append(q.doc.ExtensionsRequired, ExtensionName)
+	}
+}
+
+func (q *Quantizer) getQuantizationBits(attributeName string, ext *QuantizationExtension) uint8 {
+	switch {
+	case strings.HasPrefix(attributeName, "POSITION"):
+		return firstNonZero(ext.PositionBits, 12)
+	case strings.HasPrefix(attributeName, "NORMAL"):
+		return firstNonZero(ext.NormalBits, 10)
+	case strings.HasPrefix(attributeName, "TANGENT"):
+		return firstNonZero(ext.TangentBits, 10)
+	case strings.HasPrefix(attributeName, "TEXCOORD"):
+		return firstNonZero(ext.TexCoordBits, 12)
+	case strings.HasPrefix(attributeName, "COLOR"):
+		return firstNonZero(ext.ColorBits, 8)
+	case strings.HasPrefix(attributeName, "WEIGHTS"):
+		return firstNonZero(ext.WeightBits, 8)
+	default:
+		return firstNonZero(ext.GenericBits, 8)
+	}
+}
+
+func (q *Quantizer) quantizeAccessor(accessor *gltf.Accessor, bits uint8, componentType gltf.ComponentType) (uint32, error) {
 	// 验证访问器数据
 	if accessor.ComponentType != gltf.ComponentFloat {
-		return 0, fmt.Errorf("只支持浮点访问器量化")
+		return 0, fmt.Errorf("only float accessors can be quantized")
 	}
 
 	// 获取分量数量
@@ -454,30 +385,26 @@ func quantizeAccessor(doc *gltf.Document, accessor *gltf.Accessor, bits uint8, c
 	}[accessor.Type]
 
 	if !ok || componentCount < 1 {
-		return 0, fmt.Errorf("不支持的访问器类型: %s", accessor.Type)
+		return 0, fmt.Errorf("unsupported accessor type: %s", accessor.Type)
 	}
 
-	// 计算最小值和最大值（如果未提供）
-	minVals := accessor.Min
-	maxVals := accessor.Max
-	if minVals == nil || maxVals == nil {
-		minVals, maxVals = calculateMinMax(doc, accessor, componentCount)
-	}
+	// 计算最小值和最大值
+	minVals, maxVals := q.calculateMinMax(accessor, componentCount)
 
 	// 获取缓冲视图和缓冲区
 	if accessor.BufferView == nil {
-		return 0, fmt.Errorf("访问器缺少缓冲视图")
+		return 0, fmt.Errorf("accessor missing buffer view")
 	}
 	bvIndex := *accessor.BufferView
-	if bvIndex >= uint32(len(doc.BufferViews)) {
-		return 0, fmt.Errorf("缓冲视图索引越界")
+	if bvIndex >= uint32(len(q.doc.BufferViews)) {
+		return 0, fmt.Errorf("buffer view index out of range")
 	}
-	bv := doc.BufferViews[bvIndex]
+	bv := q.doc.BufferViews[bvIndex]
 
-	if bv.Buffer >= uint32(len(doc.Buffers)) {
-		return 0, fmt.Errorf("缓冲区索引越界")
+	if bv.Buffer >= uint32(len(q.doc.Buffers)) {
+		return 0, fmt.Errorf("buffer index out of range")
 	}
-	buffer := doc.Buffers[bv.Buffer]
+	buffer := q.doc.Buffers[bv.Buffer]
 
 	// 计算数据范围和偏移
 	start := bv.ByteOffset + accessor.ByteOffset
@@ -490,7 +417,7 @@ func quantizeAccessor(doc *gltf.Document, accessor *gltf.Accessor, bits uint8, c
 	count := accessor.Count
 	end := start + (count-1)*stride + uint32(4*componentCount)
 	if end > uint32(len(buffer.Data)) {
-		return 0, fmt.Errorf("访问器数据超出缓冲区范围")
+		return 0, fmt.Errorf("accessor data exceeds buffer range")
 	}
 
 	// 准备量化数据存储
@@ -521,7 +448,7 @@ func quantizeAccessor(doc *gltf.Document, accessor *gltf.Accessor, bits uint8, c
 			normalized := (value - minVals[c]) / ranges[c]
 			quantizedValue := normalized * maxInteger
 			quantizedValue = float32(math.Round(float64(quantizedValue)))
-			quantizedValue = float32(clampUint(quantizedValue, 0, maxInteger))
+			quantizedValue = clampFloat(quantizedValue, 0, maxInteger)
 
 			// 根据组件类型写入数据
 			idx := baseIdx + uint32(c*componentSize)
@@ -531,7 +458,7 @@ func quantizeAccessor(doc *gltf.Document, accessor *gltf.Accessor, bits uint8, c
 			case gltf.ComponentUshort:
 				binary.LittleEndian.PutUint16(quantizedData[idx:], uint16(quantizedValue))
 			default:
-				return 0, fmt.Errorf("不支持的量化组件类型: %d", componentType)
+				return 0, fmt.Errorf("unsupported quantization component type: %d", componentType)
 			}
 
 			offset += 4
@@ -543,8 +470,8 @@ func quantizeAccessor(doc *gltf.Document, accessor *gltf.Accessor, bits uint8, c
 		ByteLength: uint32(len(quantizedData)),
 		Data:       quantizedData,
 	}
-	newBufferIndex := uint32(len(doc.Buffers))
-	doc.Buffers = append(doc.Buffers, &newBuffer)
+	newBufferIndex := uint32(len(q.doc.Buffers))
+	q.doc.Buffers = append(q.doc.Buffers, &newBuffer)
 
 	// 创建新缓冲视图
 	newBufferView := gltf.BufferView{
@@ -554,8 +481,8 @@ func quantizeAccessor(doc *gltf.Document, accessor *gltf.Accessor, bits uint8, c
 		ByteStride: uint32(componentCount * componentSize),
 		Target:     bv.Target,
 	}
-	newBufferViewIndex := uint32(len(doc.BufferViews))
-	doc.BufferViews = append(doc.BufferViews, &newBufferView)
+	newBufferViewIndex := uint32(len(q.doc.BufferViews))
+	q.doc.BufferViews = append(q.doc.BufferViews, &newBufferView)
 
 	// 创建新访问器
 	newAccessor := &gltf.Accessor{
@@ -566,16 +493,21 @@ func quantizeAccessor(doc *gltf.Document, accessor *gltf.Accessor, bits uint8, c
 		Type:          accessor.Type,
 		Min:           minVals,
 		Max:           maxVals,
-		Normalized:    true, // 量化数据需要标记为归一化
+		Normalized:    true,
 	}
 
 	// 添加新访问器并返回索引
-	doc.Accessors = append(doc.Accessors, newAccessor)
-	return uint32(len(doc.Accessors) - 1), nil
+	q.doc.Accessors = append(q.doc.Accessors, newAccessor)
+	return uint32(len(q.doc.Accessors) - 1), nil
 }
 
-// 计算访问器的最小值和最大值
-func calculateMinMax(doc *gltf.Document, accessor *gltf.Accessor, componentCount int) ([]float32, []float32) {
+func (q *Quantizer) calculateMinMax(accessor *gltf.Accessor, componentCount int) ([]float32, []float32) {
+	if accessor.Min != nil && accessor.Max != nil &&
+		len(accessor.Min) >= componentCount &&
+		len(accessor.Max) >= componentCount {
+		return accessor.Min, accessor.Max
+	}
+
 	minVals := make([]float32, componentCount)
 	maxVals := make([]float32, componentCount)
 	for i := range minVals {
@@ -588,15 +520,15 @@ func calculateMinMax(doc *gltf.Document, accessor *gltf.Accessor, componentCount
 	}
 
 	bvIndex := *accessor.BufferView
-	if bvIndex >= uint32(len(doc.BufferViews)) {
+	if bvIndex >= uint32(len(q.doc.BufferViews)) {
 		return minVals, maxVals
 	}
-	bv := doc.BufferViews[bvIndex]
+	bv := q.doc.BufferViews[bvIndex]
 
-	if bv.Buffer >= uint32(len(doc.Buffers)) {
+	if bv.Buffer >= uint32(len(q.doc.Buffers)) {
 		return minVals, maxVals
 	}
-	buffer := doc.Buffers[bv.Buffer]
+	buffer := q.doc.Buffers[bv.Buffer]
 
 	start := bv.ByteOffset + accessor.ByteOffset
 	stride := bv.ByteStride
@@ -625,8 +557,71 @@ func calculateMinMax(doc *gltf.Document, accessor *gltf.Accessor, componentCount
 	return minVals, maxVals
 }
 
-// 辅助函数：限制值在指定范围内
-func clampUint(value, min, max float32) float32 {
+func readComponent(data []byte, componentType gltf.ComponentType, normalized bool) (float32, error) {
+	switch componentType {
+	case gltf.ComponentByte:
+		if len(data) < 1 {
+			return 0, fmt.Errorf("insufficient data")
+		}
+		v := int8(data[0])
+		if normalized {
+			return float32(v) / 127.0, nil
+		}
+		return float32(v), nil
+
+	case gltf.ComponentUbyte:
+		if len(data) < 1 {
+			return 0, fmt.Errorf("insufficient data")
+		}
+		v := data[0]
+		if normalized {
+			return float32(v) / 255.0, nil
+		}
+		return float32(v), nil
+
+	case gltf.ComponentShort:
+		if len(data) < 2 {
+			return 0, fmt.Errorf("insufficient data")
+		}
+		v := int16(binary.LittleEndian.Uint16(data[0:2]))
+		if normalized {
+			return float32(v) / 32767.0, nil
+		}
+		return float32(v), nil
+
+	case gltf.ComponentUshort:
+		if len(data) < 2 {
+			return 0, fmt.Errorf("insufficient data")
+		}
+		v := binary.LittleEndian.Uint16(data[0:2])
+		if normalized {
+			return float32(v) / 65535.0, nil
+		}
+		return float32(v), nil
+
+	default:
+		return 0, fmt.Errorf("unsupported component type: %d", componentType)
+	}
+}
+
+func float32ToBytes(data []float32) []byte {
+	const batchSize = 1024
+	bytes := make([]byte, len(data)*4)
+
+	for i := 0; i < len(data); i += batchSize {
+		end := i + batchSize
+		if end > len(data) {
+			end = len(data)
+		}
+
+		for j := i; j < end; j++ {
+			binary.LittleEndian.PutUint32(bytes[j*4:], math.Float32bits(data[j]))
+		}
+	}
+	return bytes
+}
+
+func clampFloat(value, min, max float32) float32 {
 	if value < min {
 		return min
 	}
@@ -636,7 +631,15 @@ func clampUint(value, min, max float32) float32 {
 	return value
 }
 
-// 辅助函数：检查字符串切片是否包含特定字符串
+func firstNonZero(values ...uint8) uint8 {
+	for _, v := range values {
+		if v != 0 {
+			return v
+		}
+	}
+	return 0
+}
+
 func contains(slice []string, item string) bool {
 	for _, s := range slice {
 		if s == item {

@@ -835,7 +835,7 @@ func WriteStructuralMetadata(doc *gltf.Document, class string, propertiesArray [
 	}
 
 	// 复用新实现
-	if _, err := encoder.AddPropertyTable(doc, ext, class, propData); err != nil {
+	if _, err = encoder.AddPropertyTable(doc, ext, class, propData); err != nil {
 		return fmt.Errorf("创建属性表失败: %w", err)
 	}
 	// 获取最新的扩展数据

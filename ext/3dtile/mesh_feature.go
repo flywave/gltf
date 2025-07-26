@@ -321,7 +321,7 @@ func (e *MeshFeaturesEncoder) UpdateFeatureID(
 	}
 
 	// 验证新的特征ID
-	if err := e.ValidateFeatureID(featureID); err != nil {
+	if err = e.ValidateFeatureID(featureID); err != nil {
 		return err
 	}
 
@@ -360,7 +360,7 @@ func (e *MeshFeaturesEncoder) WriteFeatureData(
 	}
 
 	props := rackProps(propertiesArray)
-	if err := e.updateSchema(metadata, class, props); err != nil {
+	if err = e.updateSchema(metadata, class, props); err != nil {
 		return fmt.Errorf("schema update failed: %w", err)
 	}
 
@@ -399,7 +399,7 @@ func (e *MeshFeaturesEncoder) WriteInstanceFeatureData(doc *gltf.Document, class
 
 	properties := rackProps(propertiesArray)
 
-	if err := e.updateSchema(metadata, class, properties); err != nil {
+	if err = e.updateSchema(metadata, class, properties); err != nil {
 		return err
 	}
 

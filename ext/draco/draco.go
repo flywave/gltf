@@ -9,6 +9,9 @@ import (
 
 	"github.com/flywave/gltf"
 	"github.com/flywave/go-draco"
+	"github.com/flywave/go3d/vec2"
+	"github.com/flywave/go3d/vec3"
+	"github.com/flywave/go3d/vec4"
 )
 
 const ExtensionName = "KHR_draco_mesh_compression"
@@ -38,7 +41,18 @@ func DecodeAll(doc *gltf.Document) error {
 			}
 		}
 	}
+
+	// 清理标记为nil的缓冲区视图
+	cleanUpUnusedResources(doc) // 改为调用统一的清理函数
+
 	doc.RemoveExtension(ExtensionName)
+	// 确保从ExtensionsUsed中移除
+	for i, ext := range doc.ExtensionsUsed {
+		if ext == ExtensionName {
+			doc.ExtensionsUsed = append(doc.ExtensionsUsed[:i], doc.ExtensionsUsed[i+1:]...)
+			break
+		}
+	}
 	return nil
 }
 
@@ -68,80 +82,214 @@ func decodePrimitive(doc *gltf.Document, primitive *gltf.Primitive) error {
 
 	// Draco解码
 	decoder := draco.NewDecoder()
-
 	mesh := draco.NewMesh()
+	defer mesh.Free()
 
 	err := decoder.DecodeMesh(mesh, compressedData)
 	if err != nil {
-		return fmt.Errorf("draco解码失败: %o", err)
+		return fmt.Errorf("draco解码失败: %v", err)
 	}
-	defer mesh.Free()
 
-	// 使用共享缓冲区优化
-	sharedBuffer := &bytes.Buffer{}
-	var bufferIndex, bufferViewIndex uint32
+	// 处理索引数据
+	var indices []uint32
+	if mesh.NumFaces() > 0 {
+		faceCount := mesh.NumFaces()
+		indices = make([]uint32, faceCount*3)
+		mesh.Faces(indices)
+	}
 
-	// 构建属性映射
-	attrs := make(map[string]uint32)
+	// 更新索引访问器
+	if primitive.Indices != nil && len(indices) > 0 {
+		origAccessor := doc.Accessors[*primitive.Indices]
+		if origAccessor == nil {
+			return fmt.Errorf("索引访问器不存在")
+		}
+
+		if err := updateIndexAccessor(doc, origAccessor, indices); err != nil {
+			return fmt.Errorf("更新索引数据失败: %w", err)
+		}
+	}
+
+	// 获取顶点数量
+	vertCount := int(mesh.NumPoints())
+	if vertCount <= 0 {
+		return fmt.Errorf("无效的顶点数量: %d", vertCount)
+	}
+
+	// 更新顶点属性
 	for name, id := range ext.Attributes {
 		attr := mesh.Attr(int32(id))
 		if attr == nil {
 			return fmt.Errorf("找不到属性: %s", name)
 		}
 
-		// 获取顶点数量
-		vertCount := mesh.NumPoints()
-		if vertCount <= 0 {
-			return fmt.Errorf("无效的顶点数量: %d", vertCount)
+		// 获取原始访问器ID
+		origAccessorID, exists := primitive.Attributes[name]
+		if !exists {
+			return fmt.Errorf("找不到原始访问器: %s", name)
+		}
+
+		origAccessor := doc.Accessors[origAccessorID]
+		if origAccessor == nil {
+			return fmt.Errorf("无效的访问器索引: %d", origAccessorID)
+		}
+
+		// 获取属性类型和组件数
+		components := componentsPerType(origAccessor.Type)
+		if components == 0 {
+			return fmt.Errorf("无效的属性类型: %s", origAccessor.Type)
 		}
 
 		// 获取属性数据
-		outVert := make([]float32, vertCount*3)
+		outVert := make([]float32, vertCount*int(components))
 		if _, ok := mesh.AttrData(attr, outVert); !ok {
-			return fmt.Errorf("获取属性数据失败: %w", err)
+			return fmt.Errorf("获取属性数据失败")
 		}
 
-		// 创建访问器
-		accessorIdx, err := createAccessor(
-			doc,
-			name,
-			outVert,
-			sharedBuffer,
-			&bufferIndex,
-			&bufferViewIndex,
-		)
-		if err != nil {
-			return err
+		// 更新位置属性的min/max
+		if name == "POSITION" || name == "NORMAL" {
+			min, max := calculateMinMax(outVert, int(components))
+			origAccessor.Min = min
+			origAccessor.Max = max
 		}
-		attrs[name] = accessorIdx
+
+		// 更新访问器计数
+		origAccessor.Count = uint32(vertCount)
+
+		// 转换数据为字节并更新缓冲区
+		byteData := float32ToBytes(outVert)
+		// 重置原始访问器的BufferView，确保创建新的缓冲区存储解压后数据
+		origAccessor.BufferView = nil
+		if err := updateAccessorDataWithBytes(doc, origAccessor, byteData); err != nil {
+			return fmt.Errorf("更新属性 %s 失败: %w", name, err)
+		}
 	}
 
-	// 处理索引数据
-	if mesh.NumFaces() > 0 {
-		faceCount := mesh.NumFaces()
-		indices := make([]uint32, faceCount*3)
-		if err := mesh.Faces(indices); err != nil {
-			return fmt.Errorf("获取索引数据失败: %o", err)
-		}
-
-		idxAccessor, err := createIndexAccessor(doc, indices)
-		if err != nil {
-			return fmt.Errorf("创建索引访问器失败: %w", err)
-		}
-		primitive.Indices = gltf.Index(idxAccessor)
-	}
-
-	// 如果共享缓冲区有数据，添加到文档
-	if sharedBuffer.Len() > 0 {
-		doc.Buffers = append(doc.Buffers, &gltf.Buffer{
-			Data: sharedBuffer.Bytes(),
-		})
-	}
-
-	// 更新图元
-	primitive.Attributes = attrs
+	// 移除Draco扩展
 	delete(primitive.Extensions, ExtensionName)
+
+	// 标记压缩数据BufferView为待删除
+	removeCompressedData(doc, ext.BufferView)
+
 	return nil
+}
+
+// 为访问器创建新的缓冲区和视图
+func createNewBufferForAccessor(doc *gltf.Document, accessor *gltf.Accessor, data []byte) error {
+	// 创建新的缓冲区
+	buffer := &gltf.Buffer{
+		Data:       data,
+		ByteLength: uint32(len(data)),
+	}
+	doc.Buffers = append(doc.Buffers, buffer)
+	bufferIndex := uint32(len(doc.Buffers) - 1)
+
+	// 创建新的BufferView
+	view := &gltf.BufferView{
+		Buffer:     bufferIndex,
+		ByteOffset: 0,
+		ByteLength: uint32(len(data)),
+	}
+
+	// 根据访问器类型设置目标
+	switch accessor.Type {
+	case gltf.AccessorScalar:
+		view.Target = gltf.TargetElementArrayBuffer
+	default:
+		view.Target = gltf.TargetArrayBuffer
+	}
+
+	doc.BufferViews = append(doc.BufferViews, view)
+	accessor.BufferView = gltf.Index(uint32(len(doc.BufferViews) - 1))
+	accessor.ByteOffset = 0
+	return nil
+}
+
+// 更新缓冲区视图数据
+func updateBufferViewData(doc *gltf.Document, view *gltf.BufferView, byteOffset uint32, data []byte) error {
+	if view.Buffer >= uint32(len(doc.Buffers)) {
+		return fmt.Errorf("无效的缓冲区索引: %d", view.Buffer)
+	}
+
+	buffer := doc.Buffers[view.Buffer]
+	start := view.ByteOffset + byteOffset
+	end := start + uint32(len(data))
+
+	// 检查是否需要扩展缓冲区
+	if end > uint32(len(buffer.Data)) {
+		// 扩展缓冲区
+		newSize := end
+		if newSize < uint32(len(buffer.Data))*2 {
+			newSize = uint32(len(buffer.Data)) * 2
+		}
+		newData := make([]byte, newSize)
+		copy(newData, buffer.Data)
+		buffer.Data = newData
+		buffer.ByteLength = uint32(len(newData))
+	}
+
+	// 更新数据
+	copy(buffer.Data[start:end], data)
+	return nil
+}
+
+// 更新索引访问器 - 处理没有bufferView的情况
+func updateIndexAccessor(doc *gltf.Document, accessor *gltf.Accessor, indices []uint32) error {
+	// 确定组件类型
+	maxIndex := uint32(0)
+	for _, idx := range indices {
+		if idx > maxIndex {
+			maxIndex = idx
+		}
+	}
+
+	var componentType gltf.ComponentType
+	switch {
+	case maxIndex <= math.MaxUint8:
+		componentType = gltf.ComponentUbyte
+	case maxIndex <= math.MaxUint16:
+		componentType = gltf.ComponentUshort
+	default:
+		componentType = gltf.ComponentUint
+	}
+
+	// 更新访问器元数据
+	accessor.ComponentType = componentType
+	accessor.Count = uint32(len(indices))
+
+	// 转换索引数据为字节
+	byteData := indicesToBytes(indices, componentType)
+
+	// 更新缓冲区数据
+	return updateAccessorDataWithBytes(doc, accessor, byteData)
+}
+
+// 使用字节数据更新访问器
+func updateAccessorDataWithBytes(doc *gltf.Document, accessor *gltf.Accessor, data []byte) error {
+	// 如果访问器没有bufferView，创建新的
+	if accessor.BufferView == nil {
+		return createNewBufferForAccessor(doc, accessor, data)
+	}
+
+	// 获取关联的BufferView
+	viewIdx := uint32(*accessor.BufferView)
+	if viewIdx >= uint32(len(doc.BufferViews)) {
+		return fmt.Errorf("无效的BufferView索引: %d", viewIdx)
+	}
+	view := doc.BufferViews[viewIdx]
+
+	// 更新缓冲区数据
+	return updateBufferViewData(doc, view, accessor.ByteOffset, data)
+}
+
+// 移除压缩数据
+func removeCompressedData(doc *gltf.Document, bufferViewID uint32) {
+	if int(bufferViewID) >= len(doc.BufferViews) {
+		return
+	}
+
+	// 标记压缩缓冲区视图为已删除
+	doc.BufferViews[bufferViewID] = nil
 }
 
 func createAccessor(
@@ -185,11 +333,13 @@ func createAccessor(
 		return 0, fmt.Errorf("写入缓冲区失败: %w", err)
 	}
 
-	// 创建或复用缓冲区视图
+	// 复用共享缓冲区，确保所有属性数据连续存储
 	if *bufferIndex == 0 {
-		// 首次使用，创建新的缓冲区
 		*bufferIndex = uint32(len(doc.Buffers))
-		doc.Buffers = append(doc.Buffers, &gltf.Buffer{})
+		doc.Buffers = append(doc.Buffers, &gltf.Buffer{Data: sharedBuffer.Bytes()})
+	} else {
+		// 更新现有缓冲区数据
+		doc.Buffers[*bufferIndex].Data = sharedBuffer.Bytes()
 	}
 
 	view := &gltf.BufferView{
@@ -351,6 +501,7 @@ func indicesToBytes(indices []uint32, componentType gltf.ComponentType) []byte {
 
 func EncodeAll(doc *gltf.Document, options map[string]interface{}) error {
 	encoder := draco.NewEncoder()
+
 	for _, mesh := range doc.Meshes {
 		for i := range mesh.Primitives {
 			if err := encodePrimitive(doc, encoder, mesh.Primitives[i], options); err != nil {
@@ -358,162 +509,236 @@ func EncodeAll(doc *gltf.Document, options map[string]interface{}) error {
 			}
 		}
 	}
+
+	// 新增：全局清理未使用的缓冲区资源
+	cleanUpUnusedResources(doc)
+
 	doc.AddExtensionUsed(ExtensionName)
 	return nil
 }
 
 func encodePrimitive(doc *gltf.Document, encoder *draco.Encoder, primitive *gltf.Primitive, options map[string]interface{}) error {
-	// 1. 收集顶点数据
-	indexAccIdx := primitive.Indices
-	indexAcc := doc.Accessors[*indexAccIdx]
-	faceCOunt := int(indexAcc.Count) / 3
-
-	indexAcc.BufferView = nil
-	positionAccessor, ok := primitive.Attributes["POSITION"]
-	if !ok {
+	// 检查必要数据
+	if primitive.Indices == nil {
+		return fmt.Errorf("图元缺少索引")
+	}
+	if _, ok := primitive.Attributes["POSITION"]; !ok {
 		return fmt.Errorf("缺少位置属性")
 	}
 
-	posAcc := doc.Accessors[positionAccessor]
-	positionData, err := parseAttributeData(doc, posAcc)
-	posAcc.BufferView = nil
+	// 获取索引数据
+	indexAcc := doc.Accessors[*primitive.Indices]
+	indices, err := parseIndexData(doc, indexAcc)
+	if err != nil {
+		return fmt.Errorf("解析索引数据失败: %w", err)
+	}
+
+	// 获取位置数据
+	positionAccessor := doc.Accessors[primitive.Attributes["POSITION"]]
+	positionData, err := parseAttributeData(doc, positionAccessor)
 	if err != nil {
 		return fmt.Errorf("解析位置数据失败: %w", err)
 	}
 
-	vertexCount := int(posAcc.Count)
+	vertexCount := int(positionAccessor.Count)
 	if vertexCount <= 0 {
 		return fmt.Errorf("无效的顶点数量: %d", vertexCount)
 	}
 
-	// 2. 创建Draco网格
+	// 创建Draco网格
 	builder := draco.NewMeshBuilder()
 	defer builder.Free()
-	builder.Start(faceCOunt)
+	builder.Start(vertexCount)
 
-	pos := [][3]float32{}
-	for i := 0; i < len(positionData); i += 3 {
-		pos = append(pos, [3]float32{positionData[i], positionData[i+1], positionData[i+2]})
+	// 添加位置属性
+	posData := make([]vec3.T, vertexCount)
+	for i := 0; i < vertexCount; i++ {
+		posData[i] = vec3.T{
+			positionData[i*3],
+			positionData[i*3+1],
+			positionData[i*3+2],
+		}
 	}
-	// 2. 添加位置属性
-	posIndex := builder.SetAttribute(faceCOunt, pos, draco.GAT_POSITION)
+	posIndex := builder.SetAttribute(vertexCount, posData, draco.GAT_POSITION)
 
 	attrMap := make(map[string]uint32)
 	attrMap["POSITION"] = posIndex
-	// 3. 添加其他属性
+
+	// 添加其他属性
 	for name, accessorIdx := range primitive.Attributes {
 		if name == "POSITION" {
 			continue
 		}
+
 		attrType := dracoAttributeType(name)
 		if attrType == draco.GAT_INVALID {
 			continue
 		}
-		texAcc := doc.Accessors[accessorIdx]
-		data, err := parseAttributeData(doc, texAcc)
-		texAcc.BufferView = nil
-		if err != nil {
-			return fmt.Errorf("解析属性 %s 失败: %w", name, err)
+
+		attrAcc := doc.Accessors[accessorIdx]
+		data, cerr := parseAttributeData(doc, attrAcc)
+		if cerr != nil {
+			return fmt.Errorf("解析属性 %s 失败: %w", name, cerr)
 		}
 
-		stride := 2
-		switch texAcc.Type {
-		case gltf.AccessorVec3, gltf.AccessorScalar:
-			stride = 3
-		}
+		// 根据属性类型处理数据
+		accType, _ := getAccessorType(name)
+		components := componentsPerType(accType)
 
-		var pos interface{}
-		if stride == 2 {
-			pos = [][2]float32{}
-		} else {
-			switch texAcc.ComponentType {
-			case gltf.ComponentUshort:
-				pos = [][3]uint16{}
-			case gltf.ComponentUint:
-				pos = [][3]uint32{}
-			default:
-				pos = [][3]float32{}
+		switch components {
+		case 2:
+			vec2Data := make([]vec2.T, vertexCount)
+			for i := 0; i < vertexCount; i++ {
+				vec2Data[i] = vec2.T{data[i*2], data[i*2+1]}
 			}
-		}
-
-		for i := 0; i < len(data); i += stride {
-			switch p := pos.(type) {
-			case [][2]float32:
-				p = append(p, [2]float32{data[i], data[i+1]})
-				pos = p
-			case [][3]float32:
-				p = append(p, [3]float32{data[i], data[i+1], data[i+2]})
-				pos = p
-			case [][3]uint16:
-				p = append(p, [3]uint16{uint16(data[i]), uint16(data[i+1]), uint16(data[i+2])})
-				pos = p
-			case [][3]uint32:
-				p = append(p, [3]uint32{uint32(data[i]), uint32(data[i+1]), uint32(data[i+2])})
-				pos = p
+			attrMap[name] = builder.SetAttribute(vertexCount, vec2Data, attrType)
+		case 3:
+			vec3Data := make([]vec3.T, vertexCount)
+			for i := 0; i < vertexCount; i++ {
+				vec3Data[i] = vec3.T{data[i*3], data[i*3+1], data[i*3+2]}
 			}
+			attrMap[name] = builder.SetAttribute(vertexCount, vec3Data, attrType)
+		case 4:
+			vec4Data := make([]vec4.T, vertexCount)
+			for i := 0; i < vertexCount; i++ {
+				vec4Data[i] = vec4.T{data[i*4], data[i*4+1], data[i*4+2], data[i*4+3]}
+			}
+			attrMap[name] = builder.SetAttribute(vertexCount, vec4Data, attrType)
+		default:
+			return fmt.Errorf("不支持的组件数量: %d", components)
 		}
-		attrMap[name] = builder.SetAttribute(faceCOunt, pos, attrType)
+	}
+
+	// 设置面数据
+	faceCount := len(indices) / 3
+	if faceCount*3 != len(indices) {
+		return fmt.Errorf("索引数量必须是3的倍数")
 	}
 
 	mesh := builder.GetMesh()
-	indexs2 := []uint32{}
-	mesh.Faces(indexs2)
+	defer mesh.Free()
 
-	// 4. 配置编码参数
-	applyEncoderOptions(encoder, options) // 新增选项配置
-	enc := draco.NewEncoder()
+	// 配置编码参数
+	applyEncoderOptions(encoder, options)
 
-	// 5. 执行编码
-	err, encodedData := enc.EncodeMesh(mesh)
+	// 执行编码
+	err, encodedData := encoder.EncodeMesh(mesh)
 	if err != nil {
-		return fmt.Errorf("draco编码失败: %w", err)
+		return fmt.Errorf("draco编码失败: %v", err)
 	}
 
-	// 5. 创建bufferView存储压缩数据
+	// 创建新的缓冲区存储压缩数据（独立存储）
 	buffer := &gltf.Buffer{
-		Data:       encodedData,
 		ByteLength: uint32(len(encodedData)),
+		Data:       encodedData,
 	}
-
 	doc.Buffers = append(doc.Buffers, buffer)
 	bufferIndex := uint32(len(doc.Buffers) - 1)
 
+	// 创建缓冲区视图
 	view := &gltf.BufferView{
 		Buffer:     bufferIndex,
+		ByteOffset: 0,
 		ByteLength: uint32(len(encodedData)),
 	}
 	doc.BufferViews = append(doc.BufferViews, view)
 	viewIndex := uint32(len(doc.BufferViews) - 1)
 
-	pad := paddingByte(int(buffer.ByteLength))
-	buffer.Data = append(buffer.Data, pad...)
-	buffer.ByteLength += uint32(len(pad))
+	// 添加填充字节以满足4字节对齐
+	padding := paddingBytes(len(encodedData))
+	if padding > 0 {
+		buffer.Data = append(buffer.Data, make([]byte, padding)...)
+		buffer.ByteLength += uint32(padding)
+	}
 
-	// 6. 构建扩展对象
+	// 构建扩展对象
 	ext := &DracoExtension{
 		BufferView: viewIndex,
 		Attributes: attrMap,
 	}
 
-	// 10. 更新图元
-	primitive.Extensions = make(map[string]interface{})
+	// 更新图元
+	if primitive.Extensions == nil {
+		primitive.Extensions = make(map[string]interface{})
+	}
 	primitive.Extensions[ExtensionName] = ext
+
+	// 11. 将原始访问器的BufferView置空
+	// 置空索引访问器
+	if primitive.Indices != nil {
+		indexAccessor := doc.Accessors[*primitive.Indices]
+		indexAccessor.BufferView = nil
+		indexAccessor.ByteOffset = 0
+	}
+
+	// 置空所有属性访问器
+	for _, accessorIdx := range primitive.Attributes {
+		attrAccessor := doc.Accessors[accessorIdx]
+		attrAccessor.BufferView = nil
+		attrAccessor.ByteOffset = 0
+	}
 	return nil
 }
 
-func paddingByte(size int) []byte {
-	padding := size % 4
-	if padding != 0 {
-		padding = 4 - padding
+func parseIndexData(doc *gltf.Document, accessor *gltf.Accessor) ([]uint32, error) {
+	if accessor.BufferView == nil {
+		return nil, fmt.Errorf("访问器缺少BufferView")
 	}
-	if padding == 0 {
-		return []byte{}
+
+	viewIdx := uint32(*accessor.BufferView)
+	if viewIdx >= uint32(len(doc.BufferViews)) {
+		return nil, fmt.Errorf("无效的BufferView索引: %d", viewIdx)
 	}
-	pad := make([]byte, padding)
-	for i := range pad {
-		pad[i] = 0x00
+
+	view := doc.BufferViews[viewIdx]
+	if view.Buffer >= uint32(len(doc.Buffers)) {
+		return nil, fmt.Errorf("无效的缓冲区索引: %d", view.Buffer)
 	}
-	return pad
+
+	buffer := doc.Buffers[view.Buffer]
+	if buffer.Data == nil {
+		return nil, fmt.Errorf("缓冲区数据为空")
+	}
+
+	start := view.ByteOffset + accessor.ByteOffset
+	end := start + view.ByteLength
+	if end > uint32(len(buffer.Data)) {
+		return nil, fmt.Errorf("缓冲区范围超出: %d-%d (缓冲区大小: %d)",
+			start, end, len(buffer.Data))
+	}
+
+	data := buffer.Data[start:end]
+	count := int(accessor.Count)
+	indices := make([]uint32, count)
+
+	stride := int(view.ByteStride)
+	if stride == 0 {
+		stride = gltf.SizeOfComponent(accessor.ComponentType)
+	}
+
+	for i := 0; i < count; i++ {
+		segment := data[i*stride:]
+		switch accessor.ComponentType {
+		case gltf.ComponentUbyte:
+			indices[i] = uint32(segment[0])
+		case gltf.ComponentUshort:
+			indices[i] = uint32(binary.LittleEndian.Uint16(segment))
+		case gltf.ComponentUint:
+			indices[i] = binary.LittleEndian.Uint32(segment)
+		default:
+			return nil, fmt.Errorf("不支持的索引组件类型: %s", accessor.ComponentType)
+		}
+	}
+	return indices, nil
+}
+
+// 计算需要的填充字节数
+func paddingBytes(size int) int {
+	remainder := size % 4
+	if remainder == 0 {
+		return 0
+	}
+	return 4 - remainder
 }
 
 // 辅助函数：将glTF属性名映射为Draco属性类型
@@ -593,13 +818,13 @@ func readComponent(data []byte, compType gltf.ComponentType) float32 {
 	case gltf.ComponentFloat:
 		return math.Float32frombits(binary.LittleEndian.Uint32(data))
 	case gltf.ComponentUbyte:
-		return float32(data[0])
+		return float32(data[0]) / 255.0
 	case gltf.ComponentByte:
-		return float32(int8(data[0]))
+		return float32(int8(data[0])) / 127.0
 	case gltf.ComponentUshort:
-		return float32(binary.LittleEndian.Uint16(data))
+		return float32(binary.LittleEndian.Uint16(data)) / 65535.0
 	case gltf.ComponentShort:
-		return float32(int16(binary.LittleEndian.Uint16(data)))
+		return float32(int16(binary.LittleEndian.Uint16(data))) / 32767.0
 	case gltf.ComponentUint:
 		return float32(binary.LittleEndian.Uint32(data))
 	default:
@@ -624,6 +849,93 @@ func applyEncoderOptions(encoder *draco.Encoder, options map[string]interface{})
 		}
 		if bits, ok := quant["generic"]; ok {
 			encoder.SetAttributeQuantization(draco.GAT_GENERIC, int32(bits))
+		}
+	}
+}
+
+func cleanUpUnusedResources(doc *gltf.Document) {
+	// 步骤1: 收集所有仍被引用的 bufferView
+	usedBufferViews := make(map[uint32]bool)
+	for _, accessor := range doc.Accessors {
+		if accessor.BufferView != nil {
+			usedBufferViews[uint32(*accessor.BufferView)] = true
+		}
+	}
+
+	// 收集 Draco 扩展引用的 bufferView
+	for _, mesh := range doc.Meshes {
+		for _, primitive := range mesh.Primitives {
+			if extData, exists := primitive.Extensions[ExtensionName]; exists {
+				if ext, ok := extData.(*DracoExtension); ok {
+					usedBufferViews[ext.BufferView] = true
+				}
+			}
+		}
+	}
+
+	// 步骤2: 清理未使用的 bufferView
+	var validBufferViews []*gltf.BufferView
+	bufferViewRemap := make(map[uint32]uint32) // 旧索引到新索引的映射
+
+	for idx, view := range doc.BufferViews {
+		if view != nil && usedBufferViews[uint32(idx)] {
+			bufferViewRemap[uint32(idx)] = uint32(len(validBufferViews))
+			validBufferViews = append(validBufferViews, view)
+		}
+	}
+	doc.BufferViews = validBufferViews
+
+	// 步骤3: 更新访问器中的 bufferView 引用
+	for _, accessor := range doc.Accessors {
+		if accessor.BufferView != nil {
+			if newIdx, ok := bufferViewRemap[uint32(*accessor.BufferView)]; ok {
+				accessor.BufferView = gltf.Index(newIdx)
+			} else {
+				accessor.BufferView = nil
+			}
+		}
+	}
+
+	for _, mesh := range doc.Meshes {
+		for _, primitive := range mesh.Primitives {
+			if extData, exists := primitive.Extensions[ExtensionName]; exists {
+				if ext, ok := extData.(*DracoExtension); ok {
+					if newIdx, ok := bufferViewRemap[ext.BufferView]; ok {
+						ext.BufferView = newIdx // 更新为新的BufferView索引
+					} else {
+						// 如果不在映射表中，说明该BufferView已被移除
+						delete(primitive.Extensions, ExtensionName)
+					}
+				}
+			}
+		}
+	}
+
+	// 步骤4: 收集所有仍被引用的 buffer
+	usedBuffers := make(map[uint32]bool)
+	for _, view := range doc.BufferViews {
+		usedBuffers[view.Buffer] = true
+	}
+
+	// 步骤5: 清理未使用的 buffer
+	var validBuffers []*gltf.Buffer
+	bufferRemap := make(map[uint32]uint32) // 旧索引到新索引的映射
+
+	for idx, buffer := range doc.Buffers {
+		if buffer != nil && usedBuffers[uint32(idx)] {
+			bufferRemap[uint32(idx)] = uint32(len(validBuffers))
+			validBuffers = append(validBuffers, buffer)
+		}
+	}
+	doc.Buffers = validBuffers
+
+	// 步骤6: 更新 bufferView 中的 buffer 引用
+	for _, view := range doc.BufferViews {
+		if newIdx, ok := bufferRemap[view.Buffer]; ok {
+			view.Buffer = newIdx
+		} else {
+			// 不应该发生，因为我们已经过滤了使用的 buffer
+			view.Buffer = 0
 		}
 	}
 }

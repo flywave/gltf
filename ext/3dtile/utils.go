@@ -203,7 +203,6 @@ func inferPropertyType(values interface{}) (extgltf.ClassPropertyType, *extgltf.
 	default:
 		return "", nil, false, fmt.Errorf("usupported type: %T", v)
 	}
-	return "", nil, false, fmt.Errorf("unable to infer the type")
 }
 
 func rackProps(props []map[string]interface{}) map[string]interface{} {
@@ -337,7 +336,7 @@ func convertValue(typ reflect.Type, val interface{}) interface{} {
 
 		for k, v := range vals {
 			key := convertValue(keyType, k)
-			val := convertValue(ty1, v)
+			val = convertValue(ty1, v)
 			mapValue.SetMapIndex(reflect.ValueOf(key), reflect.ValueOf(val))
 		}
 		return mapValue.Interface()

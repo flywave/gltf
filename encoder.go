@@ -447,8 +447,8 @@ func (ext *Extensions) UnmarshalJSON(data []byte) error {
 	if err == nil {
 		for key, value := range raw {
 			if extFactory, ok := queryExtension(key); ok {
-				n, err := extFactory(value)
-				if err != nil {
+				n, cerr := extFactory(value)
+				if cerr != nil {
 					(*ext)[key] = value
 				} else {
 					(*ext)[key] = n
