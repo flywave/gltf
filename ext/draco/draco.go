@@ -56,6 +56,11 @@ func DecodeAll(doc *gltf.Document) error {
 	return nil
 }
 
+// Decode 对文档中的所有网格应用Draco解压缩
+func Decode(doc *gltf.Document) error {
+	return DecodeAll(doc)
+}
+
 func decodePrimitive(doc *gltf.Document, primitive *gltf.Primitive) error {
 	extData, exists := primitive.Extensions[ExtensionName]
 	if !exists {
@@ -380,6 +385,32 @@ func indicesToBytes(indices []uint32, componentType gltf.ComponentType) []byte {
 		binary.Write(buf, binary.LittleEndian, indices)
 	}
 	return buf.Bytes()
+}
+
+// Encode 对文档中的所有网格应用Draco压缩
+func Encode(doc *gltf.Document) error {
+	return EncodeAll(doc, nil)
+}
+
+// EncodeWithOptions 对文档中的所有网格应用Draco压缩，并允许指定编码选项
+func EncodeWithOptions(doc *gltf.Document, options map[string]interface{}) error {
+	return EncodeAll(doc, options)
+}
+
+// EncodePrimitive 对单个图元应用Draco压缩
+func EncodePrimitive(doc *gltf.Document, primitive *gltf.Primitive) error {
+	// 注意：根据go-draco库的实现，Encoder可能不需要手动释放
+	// 如果需要释放资源，请参考go-draco的文档
+	encoder := draco.NewEncoder()
+	return encodePrimitive(doc, encoder, primitive, nil)
+}
+
+// EncodePrimitiveWithOptions 对单个图元应用Draco压缩，并允许指定编码选项
+func EncodePrimitiveWithOptions(doc *gltf.Document, primitive *gltf.Primitive, options map[string]interface{}) error {
+	// 注意：根据go-draco库的实现，Encoder可能不需要手动释放
+	// 如果需要释放资源，请参考go-draco的文档
+	encoder := draco.NewEncoder()
+	return encodePrimitive(doc, encoder, primitive, options)
 }
 
 func EncodeAll(doc *gltf.Document, options map[string]interface{}) error {
