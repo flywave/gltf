@@ -61,20 +61,20 @@ func validateFeatureID(feature extmesh.FeatureID) error {
 	return nil
 }
 
-// MeshFeaturesEncoder 提供网格特征和结构元数据的编码功能
-type MeshFeaturesEncoder struct {
-	metaEncoder *StructuralMetadataEncoder // 复用元数据编码器
+// MeshFeaturesManager 管理网格特征扩展
+type MeshFeaturesManager struct {
+	metaManager *StructuralMetadataManager // 使用结构元数据管理器
 }
 
-// NewMeshFeaturesEncoder 创建新的网格特征编码器
-func NewMeshFeaturesEncoder() *MeshFeaturesEncoder {
-	return &MeshFeaturesEncoder{
-		metaEncoder: NewStructuralMetadataEncoder(),
+// NewMeshFeaturesManager 创建新的网格特征管理器
+func NewMeshFeaturesManager() *MeshFeaturesManager {
+	return &MeshFeaturesManager{
+		metaManager: NewStructuralMetadataManager(),
 	}
 }
 
 // AddMeshFeatures 添加网格特征扩展到原始图元
-func (e *MeshFeaturesEncoder) AddMeshFeatures(
+func (m *MeshFeaturesManager) AddMeshFeatures(
 	primitive *gltf.Primitive,
 	featureIDs []extmesh.FeatureID,
 ) error {
@@ -99,7 +99,7 @@ func (e *MeshFeaturesEncoder) AddMeshFeatures(
 }
 
 // AddStructuralMetadata 添加结构元数据扩展到原始图元
-func (e *MeshFeaturesEncoder) AddStructuralMetadata(
+func (m *MeshFeaturesManager) AddStructuralMetadata(
 	primitive *gltf.Primitive,
 	propertyTextures, propertyAttributes []uint32,
 ) error {
@@ -120,12 +120,12 @@ func (e *MeshFeaturesEncoder) AddStructuralMetadata(
 	}
 
 	// 添加到原始图元
-	primitive.Extensions["EXT_structural_metadata"] = extData
+	primitive.Extensions[extmesh.StructuralMetadataExtensionName] = extData
 	return nil
 }
 
 // CreateFeatureID 创建特征ID对象
-func (e *MeshFeaturesEncoder) CreateFeatureID(
+func (m *MeshFeaturesManager) CreateFeatureID(
 	featureCount uint32,
 	options ...FeatureIDOption,
 ) extmesh.FeatureID {
@@ -180,7 +180,7 @@ func WithPropertyTable(table uint32) FeatureIDOption {
 }
 
 // CreateFeatureIDTexture 创建特征ID纹理对象
-func (e *MeshFeaturesEncoder) CreateFeatureIDTexture(
+func (m *MeshFeaturesManager) CreateFeatureIDTexture(
 	textureIndex uint32,
 	options ...FeatureIDTextureOption,
 ) extmesh.FeatureIDTexture {
@@ -215,7 +215,7 @@ func WithTextureCoord(texCoord uint32) FeatureIDTextureOption {
 }
 
 // GetMeshFeatures 从原始图元获取网格特征扩展
-func (e *MeshFeaturesEncoder) GetMeshFeatures(
+func (m *MeshFeaturesManager) GetMeshFeatures(
 	primitive *gltf.Primitive,
 ) (*extmesh.ExtMeshFeatures, error) {
 	if primitive.Extensions == nil {
@@ -240,14 +240,14 @@ func (e *MeshFeaturesEncoder) GetMeshFeatures(
 }
 
 // GetStructuralMetadata 从原始图元获取结构元数据扩展
-func (e *MeshFeaturesEncoder) GetStructuralMetadata(
+func (m *MeshFeaturesManager) GetStructuralMetadata(
 	primitive *gltf.Primitive,
 ) (*extmesh.ExtStructuralMetadata, error) {
 	if primitive.Extensions == nil {
 		return nil, errors.New("no extensions found")
 	}
 
-	extData, exists := primitive.Extensions["EXT_structural_metadata"]
+	extData, exists := primitive.Extensions[extmesh.StructuralMetadataExtensionName]
 	if !exists {
 		return nil, errors.New("EXT_structural_metadata extension not found")
 	}
@@ -265,7 +265,7 @@ func (e *MeshFeaturesEncoder) GetStructuralMetadata(
 }
 
 // ValidateFeatureID 验证特征ID对象是否有效
-func (e *MeshFeaturesEncoder) ValidateFeatureID(featureID extmesh.FeatureID) error {
+func (m *MeshFeaturesManager) ValidateFeatureID(featureID extmesh.FeatureID) error {
 	if featureID.FeatureCount == 0 {
 		return errors.New("featureCount must be greater than zero")
 	}
@@ -305,12 +305,12 @@ func (e *MeshFeaturesEncoder) ValidateFeatureID(featureID extmesh.FeatureID) err
 }
 
 // UpdateFeatureID 更新原始图元中的特征ID
-func (e *MeshFeaturesEncoder) UpdateFeatureID(
+func (m *MeshFeaturesManager) UpdateFeatureID(
 	primitive *gltf.Primitive,
 	index int,
 	featureID extmesh.FeatureID,
 ) error {
-	ext, err := e.GetMeshFeatures(primitive)
+	ext, err := m.GetMeshFeatures(primitive)
 	if err != nil {
 		return err
 	}
@@ -321,7 +321,7 @@ func (e *MeshFeaturesEncoder) UpdateFeatureID(
 	}
 
 	// 验证新的特征ID
-	if err = e.ValidateFeatureID(featureID); err != nil {
+	if err = m.ValidateFeatureID(featureID); err != nil {
 		return err
 	}
 
@@ -339,7 +339,7 @@ func (e *MeshFeaturesEncoder) UpdateFeatureID(
 }
 
 // WriteFeatureData 批量写入特征数据和属性表（高级API）
-func (e *MeshFeaturesEncoder) WriteFeatureData(
+func (m *MeshFeaturesManager) WriteFeatureData(
 	doc *gltf.Document,
 	class string,
 	propertiesArray []map[string]interface{},
@@ -353,34 +353,41 @@ func (e *MeshFeaturesEncoder) WriteFeatureData(
 		return fmt.Errorf("properties and featureIDs cannot be empty")
 	}
 
-	// 2. 创建元数据扩展
-	metadata, err := e.getOrCreateMetadata(doc)
-	if err != nil {
-		return fmt.Errorf("metadata initialization failed: %w", err)
-	}
-
+	// 2. 创建属性数据
 	props := rackProps(propertiesArray)
-	if err = e.updateSchema(metadata, class, props); err != nil {
-		return fmt.Errorf("schema update failed: %w", err)
+	propData := make([]PropertyData, 0, len(props))
+
+	for name, values := range props {
+		propType, componentType, _, err := inferPropertyType(values)
+		if err != nil {
+			return fmt.Errorf("属性类型推断失败: %w", err)
+		}
+		p := PropertyData{
+			Name:        name,
+			ElementType: propType,
+			Values:      values,
+		}
+		if componentType != nil {
+			p.ComponentType = *componentType
+		}
+		propData = append(propData, p)
 	}
 
-	// 4. 创建属性表
-	tableIndex, err := e.createPropertyTable(doc, metadata, class, props)
+	// 3. 添加属性表到文档
+	tableIndex, err := m.metaManager.AddPropertyTable(doc, class, propData)
 	if err != nil {
-		return fmt.Errorf("property table creation failed: %w", err)
+		return fmt.Errorf("属性表创建失败: %w", err)
 	}
 
-	// 5. 创建FeatureID属性
-	if err := e.createFeatureIDAttributes(doc, featureIDs, uint32(tableIndex)); err != nil {
+	// 4. 创建FeatureID属性
+	if err := m.createFeatureIDAttributes(doc, featureIDs, uint32(tableIndex)); err != nil {
 		return fmt.Errorf("featureID attributes creation failed: %w", err)
 	}
 
-	// 6. 更新文档扩展
-	doc.Extensions[extmesh.ExtensionName] = metadata
 	return nil
 }
 
-func (e *MeshFeaturesEncoder) WriteInstanceFeatureData(doc *gltf.Document, class string, propertiesArray []map[string]interface{}) error {
+func (m *MeshFeaturesManager) WriteInstanceFeatureData(doc *gltf.Document, class string, propertiesArray []map[string]interface{}) error {
 	if doc == nil {
 		return fmt.Errorf("glTF document cannot be nil")
 	}
@@ -392,31 +399,40 @@ func (e *MeshFeaturesEncoder) WriteInstanceFeatureData(doc *gltf.Document, class
 		return fmt.Errorf("document must have mesh")
 	}
 
-	metadata, err := e.getOrCreateMetadata(doc)
-	if err != nil {
-		return err
-	}
-
+	// 创建属性数据
 	properties := rackProps(propertiesArray)
+	propData := make([]PropertyData, 0, len(properties))
 
-	if err = e.updateSchema(metadata, class, properties); err != nil {
-		return err
+	for name, values := range properties {
+		propType, componentType, _, err := inferPropertyType(values)
+		if err != nil {
+			return fmt.Errorf("属性类型推断失败: %w", err)
+		}
+		p := PropertyData{
+			Name:        name,
+			ElementType: propType,
+			Values:      values,
+		}
+		if componentType != nil {
+			p.ComponentType = *componentType
+		}
+		propData = append(propData, p)
 	}
 
-	tableIndex, err := e.createPropertyTable(doc, metadata, class, properties)
+	// 添加属性表到文档
+	tableIndex, err := m.metaManager.AddPropertyTable(doc, class, propData)
 	if err != nil {
+		return fmt.Errorf("属性表创建失败: %w", err)
+	}
+
+	if err := m.createInstanceFeatureIDAttributes(doc, len(propertiesArray), uint32(tableIndex)); err != nil {
 		return err
 	}
 
-	if err := e.createInstanceFeatureIDAttributes(doc, len(propertiesArray), uint32(tableIndex)); err != nil {
-		return err
-	}
-
-	doc.Extensions[extmesh.ExtensionName] = metadata
 	return nil
 }
 
-func (e *MeshFeaturesEncoder) createInstanceFeatureIDAttributes(doc *gltf.Document, featureCount int, tableIndex uint32) error {
+func (m *MeshFeaturesManager) createInstanceFeatureIDAttributes(doc *gltf.Document, featureCount int, tableIndex uint32) error {
 	meshFeatures := extmesh.ExtMeshFeatures{}
 	if ext, exists := doc.Extensions[extmesh.ExtensionName]; exists {
 		if err := unmarshalExtension(ext, &meshFeatures); err != nil {
@@ -428,9 +444,9 @@ func (e *MeshFeaturesEncoder) createInstanceFeatureIDAttributes(doc *gltf.Docume
 		ids[i] = uint32(i)
 	}
 
-	featureID := e.CreateFeatureID(uint32(len(ids)),
+	featureID := m.CreateFeatureID(uint32(len(ids)),
 		WithPropertyTable(tableIndex),
-		WithAttribute(e.createAccessor(doc, ids)),
+		WithAttribute(m.createAccessor(doc, ids)),
 	)
 
 	for _, mesh := range doc.Meshes {
@@ -448,67 +464,16 @@ func (e *MeshFeaturesEncoder) createInstanceFeatureIDAttributes(doc *gltf.Docume
 	return nil
 }
 
-// 私有辅助方法
-func (e *MeshFeaturesEncoder) getOrCreateMetadata(doc *gltf.Document) (*extgltf.ExtStructuralMetadata, error) {
-	if doc.Extensions == nil {
-		doc.Extensions = make(gltf.Extensions)
-	}
-
-	extData, exists := doc.Extensions[extmesh.ExtensionName]
-	if !exists {
-		meta := &extgltf.ExtStructuralMetadata{
-			Schema: &extgltf.Schema{
-				Classes: make(map[string]extgltf.Class),
-			},
-		}
-		doc.Extensions[extmesh.ExtensionName] = meta
-		return meta, nil
-	}
-
-	// 类型断言处理
-	extDataBytes, ok := extData.([]byte)
-	if !ok {
-		return nil, fmt.Errorf("invalid metadata format")
-	}
-
-	var metadata extgltf.ExtStructuralMetadata
-	if err := json.Unmarshal(extDataBytes, &metadata); err != nil {
-		return nil, err
-	}
-	return &metadata, nil
-}
-
-func (e *MeshFeaturesEncoder) updateSchema(metadata *extgltf.ExtStructuralMetadata, class string, sampleProps map[string]interface{}) error {
-	if _, exists := metadata.Schema.Classes[class]; exists {
-		return nil
-	}
-
-	props := make(map[string]extgltf.ClassProperty)
-	for name, val := range sampleProps {
-		propType, componentType, isArray, err := inferPropertyType(val)
-		if err != nil {
-			return err
-		}
-		props[name] = extgltf.ClassProperty{
-			Type:          propType,
-			ComponentType: componentType,
-			Array:         isArray,
-		}
-	}
-	metadata.Schema.Classes[class] = extgltf.Class{Properties: props}
-	return nil
-}
-
-func (e *MeshFeaturesEncoder) createFeatureIDAttributes(doc *gltf.Document, featureIDs [][][]uint16, tableIndex uint32) error {
+func (m *MeshFeaturesManager) createFeatureIDAttributes(doc *gltf.Document, featureIDs [][][]uint16, tableIndex uint32) error {
 	for meshIdx, idss := range featureIDs {
 		mesh := doc.Meshes[meshIdx]
 		for primIdx, ids := range idss {
-			featureID := e.CreateFeatureID(uint32(len(ids)),
+			featureID := m.CreateFeatureID(uint32(len(ids)),
 				WithPropertyTable(tableIndex),
-				WithAttribute(e.createAccessor(doc, ids)),
+				WithAttribute(m.createAccessor(doc, ids)),
 			)
 
-			if err := e.AddMeshFeatures(mesh.Primitives[primIdx], []extmesh.FeatureID{featureID}); err != nil {
+			if err := m.AddMeshFeatures(mesh.Primitives[primIdx], []extmesh.FeatureID{featureID}); err != nil {
 				return err
 			}
 		}
@@ -517,7 +482,7 @@ func (e *MeshFeaturesEncoder) createFeatureIDAttributes(doc *gltf.Document, feat
 }
 
 // 创建数值访问器
-func (e *MeshFeaturesEncoder) createAccessor(doc *gltf.Document, data interface{}) uint32 {
+func (m *MeshFeaturesManager) createAccessor(doc *gltf.Document, data interface{}) uint32 {
 	buf := new(bytes.Buffer)
 	binary.Write(buf, binary.LittleEndian, data)
 
@@ -550,47 +515,6 @@ func (e *MeshFeaturesEncoder) createAccessor(doc *gltf.Document, data interface{
 	return uint32(len(doc.Accessors) - 1)
 }
 
-// 修改后的createPropertyTable方法
-func (e *MeshFeaturesEncoder) createPropertyTable(
-	doc *gltf.Document,
-	metadata *extgltf.ExtStructuralMetadata,
-	class string,
-	props map[string]interface{},
-) (int, error) {
-	propData := make([]PropertyData, 0, len(props))
-	for name, values := range props {
-		propType, componentType, _, err := inferPropertyType(values) // 添加错误处理
-		if err != nil {
-			return 0, fmt.Errorf("infer property type for %s: %w", name, err)
-		}
-		p := PropertyData{
-			Name:        name,
-			ElementType: propType,
-			Values:      values,
-		}
-		if componentType != nil {
-			p.ComponentType = *componentType
-		}
-		propData = append(propData, p)
-	}
-
-	// 复用已有实现
-	tableIndex, err := e.metaEncoder.AddPropertyTable(doc, metadata, class, propData)
-	if err != nil {
-		return 0, fmt.Errorf("create property table via meta encoder: %w", err)
-	}
-
-	// 获取更新后的元数据扩展
-	ext, err := e.metaEncoder.getOrCreateExtension(doc)
-	if err != nil {
-		return 0, fmt.Errorf("get updated metadata: %w", err)
-	}
-
-	// 同步到当前metadata对象
-	*metadata = *ext
-	return tableIndex, nil
-}
-
 // WriteFeatureData 批量写入特征数据和属性表（独立函数）
 func WriteFeatureData(
 	doc *gltf.Document,
@@ -598,11 +522,11 @@ func WriteFeatureData(
 	propertiesArray []map[string]interface{},
 	featureIDs [][][]uint16,
 ) error {
-	// 创建编码器实例
-	encoder := NewMeshFeaturesEncoder()
+	// 创建管理器实例
+	manager := NewMeshFeaturesManager()
 
-	// 复用编码器实现
-	if err := encoder.WriteFeatureData(doc, class, propertiesArray, featureIDs); err != nil {
+	// 复用管理器实现
+	if err := manager.WriteFeatureData(doc, class, propertiesArray, featureIDs); err != nil {
 		return fmt.Errorf("写入特征数据失败: %w", err)
 	}
 
@@ -613,8 +537,8 @@ func WriteFeatureData(
 }
 
 func WriteInstanceFeatureData(doc *gltf.Document, class string, propertiesArray []map[string]interface{}) error {
-	encoder := NewMeshFeaturesEncoder()
-	if err := encoder.WriteInstanceFeatureData(doc, class, propertiesArray); err != nil {
+	manager := NewMeshFeaturesManager()
+	if err := manager.WriteInstanceFeatureData(doc, class, propertiesArray); err != nil {
 		return fmt.Errorf("写入特征数据失败: %w", err)
 	}
 

@@ -30,8 +30,8 @@ func UnmarshalStructuralMetadata(data []byte) (interface{}, error) {
 	if ext.Schema == nil {
 		return nil, errors.New("schema为必填字段")
 	}
-	if len(ext.PropertyTables) == 0 {
-		return nil, errors.New("至少需要一个属性表")
+	if len(ext.PropertyTables) == 0 && len(ext.PropertyTextures) == 0 && len(ext.PropertyAttributes) == 0 {
+		return nil, errors.New("至少需要一个属性表、纹理或属性")
 	}
 
 	// 校验属性表与schema的一致性
@@ -53,14 +53,6 @@ type (
 	PropertyAttribute = extgltf.PropertyAttribute
 )
 
-// StructuralMetadataEncoder 提供EXT_structural_metadata扩展的编码功能
-type StructuralMetadataEncoder struct{}
-
-// NewStructuralMetadataEncoder 创建新的元数据编码器
-func NewStructuralMetadataEncoder() *StructuralMetadataEncoder {
-	return &StructuralMetadataEncoder{}
-}
-
 // PropertyData 定义属性数据
 type PropertyData struct {
 	Name          string
@@ -69,98 +61,16 @@ type PropertyData struct {
 	Values        interface{} // []float64, []int, []string, 等
 }
 
-// AddPropertyTable 添加属性表到GLTF文档
-func (e *StructuralMetadataEncoder) AddPropertyTable(
-	doc *gltf.Document,
-	ext *extgltf.ExtStructuralMetadata,
-	classID string,
-	properties []PropertyData,
-) (int, error) {
+// PropertyTableManager 管理属性表的创建和操作
+type PropertyTableManager struct{}
 
-	// 创建或更新schema
-	ext.Schema = e.createSchema(classID, properties, ext.Schema)
-
-	// 创建属性表
-	table, err := e.createPropertyTable(doc, classID, properties, ext.Schema)
-	if err != nil {
-		return -1, err
-	}
-
-	// 添加属性表
-	if ext.PropertyTables == nil {
-		ext.PropertyTables = make([]PropertyTable, 0)
-	}
-	ext.PropertyTables = append(ext.PropertyTables, *table)
-	return len(ext.PropertyTables) - 1, nil
-}
-
-// getOrCreateExtension 获取或创建结构元数据扩展
-func (e *StructuralMetadataEncoder) getOrCreateExtension(doc *gltf.Document) (*extgltf.ExtStructuralMetadata, error) {
-	if doc.Extensions == nil {
-		doc.Extensions = make(gltf.Extensions)
-	}
-
-	if extData, exists := doc.Extensions[extgltf.ExtensionName]; exists {
-		extDataBytes, ok := extData.([]byte)
-		if !ok {
-			return nil, fmt.Errorf("extension data is not in expected format ([]byte)")
-		}
-
-		var ext extgltf.ExtStructuralMetadata
-		if err := json.Unmarshal(extDataBytes, &ext); err != nil {
-			return nil, fmt.Errorf("error unmarshaling existing extension: %w", err)
-		}
-		return &ext, nil
-	}
-
-	// 创建新扩展
-	ext := &extgltf.ExtStructuralMetadata{
-		Schema: &Schema{
-			ID:      "default_schema",
-			Classes: make(map[string]Class),
-		},
-	}
-	return ext, nil
-}
-
-// createSchema 创建或更新元数据结构
-func (e *StructuralMetadataEncoder) createSchema(
-	classID string,
-	properties []PropertyData,
-	existingSchema *Schema,
-) *Schema {
-	schema := existingSchema
-	if schema == nil {
-		schema = &Schema{
-			ID:      "default_schema",
-			Classes: make(map[string]Class),
-		}
-	}
-
-	// 获取或创建类
-	class, exists := schema.Classes[classID]
-	if !exists {
-		class = Class{
-			Properties: make(map[string]ClassProperty),
-		}
-	}
-
-	// 添加属性到类
-	for _, prop := range properties {
-		classProperty := ClassProperty{
-			Type:          prop.ElementType,
-			ComponentType: &prop.ComponentType,
-		}
-		class.Properties[prop.Name] = classProperty
-	}
-
-	// 更新schema
-	schema.Classes[classID] = class
-	return schema
+// NewPropertyTableManager 创建新的属性表管理器
+func NewPropertyTableManager() *PropertyTableManager {
+	return &PropertyTableManager{}
 }
 
 // createPropertyTable 创建属性表
-func (e *StructuralMetadataEncoder) createPropertyTable(
+func (m *PropertyTableManager) createPropertyTable(
 	doc *gltf.Document,
 	classID string,
 	properties []PropertyData,
@@ -188,9 +98,9 @@ func (e *StructuralMetadataEncoder) createPropertyTable(
 	}
 
 	// 确定行数
-	rowCount := e.getValueCount(properties[0].Values)
+	rowCount := m.getValueCount(properties[0].Values)
 	for _, prop := range properties {
-		if e.getValueCount(prop.Values) != rowCount {
+		if m.getValueCount(prop.Values) != rowCount {
 			return nil, errors.New("all properties must have the same number of values")
 		}
 	}
@@ -204,7 +114,7 @@ func (e *StructuralMetadataEncoder) createPropertyTable(
 
 	// 添加属性到表
 	for _, prop := range properties {
-		tableProp, err := e.encodeProperty(doc, prop)
+		tableProp, err := m.encodeProperty(doc, prop)
 		if err != nil {
 			return nil, fmt.Errorf("error encoding property %s: %w", prop.Name, err)
 		}
@@ -215,7 +125,7 @@ func (e *StructuralMetadataEncoder) createPropertyTable(
 }
 
 // getValueCount 获取值数量
-func (e *StructuralMetadataEncoder) getValueCount(values interface{}) int {
+func (m *PropertyTableManager) getValueCount(values interface{}) int {
 	switch v := values.(type) {
 	case []string:
 		return len(v)
@@ -279,7 +189,7 @@ func (e *StructuralMetadataEncoder) getValueCount(values interface{}) int {
 }
 
 // encodeProperty 编码单个属性
-func (e *StructuralMetadataEncoder) encodeProperty(
+func (m *PropertyTableManager) encodeProperty(
 	doc *gltf.Document,
 	prop PropertyData,
 ) (*extgltf.PropertyTableProperty, error) {
@@ -288,20 +198,20 @@ func (e *StructuralMetadataEncoder) encodeProperty(
 	switch values := reflect.ValueOf(prop.Values).Interface().(type) {
 	case []string:
 		// 处理字符串数组
-		data, offsets, err := e.encodeStringArray(values)
+		data, offsets, err := m.encodeStringArray(values)
 		if err != nil {
 			return nil, err
 		}
 
 		// 添加值缓冲区视图
-		valuesIndex, err := e.addBufferView(doc, data)
+		valuesIndex, err := m.addBufferView(doc, data)
 		if err != nil {
 			return nil, err
 		}
 		tableProp.Values = uint32(valuesIndex)
 
 		// 添加偏移量缓冲区视图
-		offsetsIndex, err := e.addBufferView(doc, offsets)
+		offsetsIndex, err := m.addBufferView(doc, offsets)
 		if err != nil {
 			return nil, err
 		}
@@ -310,20 +220,20 @@ func (e *StructuralMetadataEncoder) encodeProperty(
 		tableProp.StringOffsetType = extgltf.OffsetTypeUint32
 	case [][]string:
 		// 处理字符串数组
-		data, innerOffsets, outerOffset, err := e.encodeStringMatrix(values)
+		data, innerOffsets, outerOffset, err := m.encodeStringMatrix(values)
 		if err != nil {
 			return nil, err
 		}
 
 		// 添加值缓冲区视图
-		valuesIndex, err := e.addBufferView(doc, data)
+		valuesIndex, err := m.addBufferView(doc, data)
 		if err != nil {
 			return nil, err
 		}
 		tableProp.Values = uint32(valuesIndex)
 
 		// 添加偏移量缓冲区视图
-		innerOffsetsIndex, err := e.addBufferView(doc, innerOffsets)
+		innerOffsetsIndex, err := m.addBufferView(doc, innerOffsets)
 		if err != nil {
 			return nil, err
 		}
@@ -331,7 +241,7 @@ func (e *StructuralMetadataEncoder) encodeProperty(
 		*tableProp.StringOffsets = uint32(innerOffsetsIndex)
 		tableProp.StringOffsetType = extgltf.OffsetTypeUint32
 
-		outOffsetsIndex, err := e.addBufferView(doc, outerOffset)
+		outOffsetsIndex, err := m.addBufferView(doc, outerOffset)
 		if err != nil {
 			return nil, err
 		}
@@ -341,8 +251,8 @@ func (e *StructuralMetadataEncoder) encodeProperty(
 		tableProp.ArrayOffsetType = extgltf.OffsetTypeUint32
 	case []bool:
 		// 处理布尔数组
-		data := e.encodeBoolArray(values)
-		index, err := e.addBufferView(doc, data)
+		data := m.encodeBoolArray(values)
+		index, err := m.addBufferView(doc, data)
 		if err != nil {
 			return nil, err
 		}
@@ -350,11 +260,11 @@ func (e *StructuralMetadataEncoder) encodeProperty(
 
 	default:
 		// 处理数值数组
-		data, err := e.encodeNumericArray(prop.Values, prop.ComponentType)
+		data, err := m.encodeNumericArray(prop.Values, prop.ComponentType)
 		if err != nil {
 			return nil, err
 		}
-		index, err := e.addBufferView(doc, data)
+		index, err := m.addBufferView(doc, data)
 		if err != nil {
 			return nil, err
 		}
@@ -365,7 +275,7 @@ func (e *StructuralMetadataEncoder) encodeProperty(
 }
 
 // encodeStringArray 编码字符串数组
-func (e *StructuralMetadataEncoder) encodeStringArray(values []string) ([]byte, []byte, error) {
+func (m *PropertyTableManager) encodeStringArray(values []string) ([]byte, []byte, error) {
 	// 计算总字节数
 	totalBytes := 0
 	for _, s := range values {
@@ -397,7 +307,7 @@ func (e *StructuralMetadataEncoder) encodeStringArray(values []string) ([]byte, 
 	return dataBuffer, offsetBuffer, nil
 }
 
-func (e *StructuralMetadataEncoder) encodeStringMatrix(matrix [][]string) ([]byte, []byte, []byte, error) {
+func (m *PropertyTableManager) encodeStringMatrix(matrix [][]string) ([]byte, []byte, []byte, error) {
 	// 1. 验证所有字符串并计算总大小
 	totalStringsSize := 0
 	totalInnerOffsets := 0
@@ -452,7 +362,7 @@ func (e *StructuralMetadataEncoder) encodeStringMatrix(matrix [][]string) ([]byt
 }
 
 // encodeBoolArray 编码布尔数组
-func (e *StructuralMetadataEncoder) encodeBoolArray(values []bool) []byte {
+func (m *PropertyTableManager) encodeBoolArray(values []bool) []byte {
 	// 每字节存储8个布尔值
 	byteCount := (len(values) + 7) / 8
 	data := make([]byte, byteCount)
@@ -468,35 +378,8 @@ func (e *StructuralMetadataEncoder) encodeBoolArray(values []bool) []byte {
 	return data
 }
 
-// 在StructuralMetadataEncoder中添加适配方法
-func (e *StructuralMetadataEncoder) WriteLegacyFormat(doc *gltf.Document, class string, propertiesArray []map[string]interface{}) error {
-	// 转换旧格式参数为新格式
-	props := rackProps(propertiesArray)
-	propData := make([]PropertyData, 0, len(props))
-
-	for name, values := range props {
-		propType, componentType, _, _ := inferPropertyType(values)
-		p := PropertyData{
-			Name:        name,
-			ElementType: propType,
-			Values:      values,
-		}
-		if componentType != nil {
-			p.ComponentType = *componentType
-		}
-		propData = append(propData, p)
-	}
-	ext, err := e.getOrCreateExtension(doc)
-	if err != nil {
-		return err
-	}
-	// 复用新实现
-	_, err = e.AddPropertyTable(doc, ext, class, propData)
-	return err
-}
-
 // encodeNumericArray 编码数值数组
-func (e *StructuralMetadataEncoder) encodeNumericArray(
+func (m *PropertyTableManager) encodeNumericArray(
 	values interface{},
 	componentType extgltf.ClassPropertyComponentType,
 ) ([]byte, error) {
@@ -522,7 +405,7 @@ func (e *StructuralMetadataEncoder) encodeNumericArray(
 		}
 	case []int:
 		for _, val := range v {
-			if err := e.encodeInteger(&buf, int64(val), componentType); err != nil {
+			if err := m.encodeInteger(&buf, int64(val), componentType); err != nil {
 				return nil, err
 			}
 		}
@@ -546,13 +429,13 @@ func (e *StructuralMetadataEncoder) encodeNumericArray(
 		}
 	case []int64:
 		for _, val := range v {
-			if err := e.encodeInteger(&buf, val, componentType); err != nil {
+			if err := m.encodeInteger(&buf, val, componentType); err != nil {
 				return nil, err
 			}
 		}
 	case []uint:
 		for _, val := range v {
-			if err := e.encodeInteger(&buf, int64(val), componentType); err != nil {
+			if err := m.encodeInteger(&buf, int64(val), componentType); err != nil {
 				return nil, err
 			}
 		}
@@ -576,7 +459,7 @@ func (e *StructuralMetadataEncoder) encodeNumericArray(
 		}
 	case []uint64:
 		for _, val := range v {
-			if err := e.encodeInteger(&buf, int64(val), componentType); err != nil {
+			if err := m.encodeInteger(&buf, int64(val), componentType); err != nil {
 				return nil, err
 			}
 		}
@@ -588,7 +471,7 @@ func (e *StructuralMetadataEncoder) encodeNumericArray(
 }
 
 // encodeInteger 编码整数值
-func (e *StructuralMetadataEncoder) encodeInteger(
+func (m *PropertyTableManager) encodeInteger(
 	buf *bytes.Buffer,
 	val int64,
 	componentType extgltf.ClassPropertyComponentType,
@@ -616,7 +499,7 @@ func (e *StructuralMetadataEncoder) encodeInteger(
 }
 
 // addBufferView 添加缓冲区视图到GLTF文档
-func (e *StructuralMetadataEncoder) addBufferView(doc *gltf.Document, data []byte) (int, error) {
+func (m *PropertyTableManager) addBufferView(doc *gltf.Document, data []byte) (int, error) {
 	// 确保缓冲区存在
 	if len(doc.Buffers) == 0 {
 		doc.Buffers = append(doc.Buffers, &gltf.Buffer{})
@@ -644,7 +527,7 @@ func (e *StructuralMetadataEncoder) addBufferView(doc *gltf.Document, data []byt
 }
 
 // DecodeProperty 解码属性数据
-func (e *StructuralMetadataEncoder) DecodeProperty(
+func (m *PropertyTableManager) DecodeProperty(
 	doc *gltf.Document,
 	tableIndex int,
 	propertyName string,
@@ -691,15 +574,15 @@ func (e *StructuralMetadataEncoder) DecodeProperty(
 	switch {
 	case prop.StringOffsets != nil:
 		// 字符串类型
-		return e.decodeStringProperty(doc, prop, valuesData)
+		return m.decodeStringProperty(doc, prop, valuesData)
 	default:
 		// 数值或布尔类型
-		return e.decodeNumericProperty(doc, classProperty, valuesData)
+		return m.decodeNumericProperty(doc, classProperty, valuesData)
 	}
 }
 
 // decodeStringProperty 解码字符串属性
-func (e *StructuralMetadataEncoder) decodeStringProperty(
+func (m *PropertyTableManager) decodeStringProperty(
 	doc *gltf.Document,
 	prop extgltf.PropertyTableProperty,
 	valuesData []byte,
@@ -729,7 +612,7 @@ func (e *StructuralMetadataEncoder) decodeStringProperty(
 }
 
 // decodeNumericProperty 解码数值属性
-func (e *StructuralMetadataEncoder) decodeNumericProperty(
+func (m *PropertyTableManager) decodeNumericProperty(
 	_ *gltf.Document,
 	prop extgltf.ClassProperty,
 	valuesData []byte,
@@ -740,20 +623,20 @@ func (e *StructuralMetadataEncoder) decodeNumericProperty(
 	// 根据组件类型确定解码方式
 	switch *prop.ComponentType {
 	case extgltf.ClassPropertyComponentTypeFloat32:
-		return e.decodeFloat32Array(valuesData)
+		return m.decodeFloat32Array(valuesData)
 	case extgltf.ClassPropertyComponentTypeInt32:
-		return e.decodeInt32Array(valuesData)
+		return m.decodeInt32Array(valuesData)
 	case extgltf.ClassPropertyComponentTypeUint32:
-		return e.decodeUint32Array(valuesData)
+		return m.decodeUint32Array(valuesData)
 	case extgltf.ClassPropertyComponentTypeInt8:
-		return e.decodeInt8Array(valuesData)
+		return m.decodeInt8Array(valuesData)
 	default:
 		return nil, fmt.Errorf("unsupported component type: %s", *prop.ComponentType)
 	}
 }
 
 // decodeFloat32Array 解码float32数组
-func (e *StructuralMetadataEncoder) decodeFloat32Array(data []byte) ([]float32, error) {
+func (m *PropertyTableManager) decodeFloat32Array(data []byte) ([]float32, error) {
 	count := len(data) / 4
 	result := make([]float32, count)
 	if err := binary.Read(bytes.NewReader(data), binary.LittleEndian, &result); err != nil {
@@ -763,7 +646,7 @@ func (e *StructuralMetadataEncoder) decodeFloat32Array(data []byte) ([]float32, 
 }
 
 // decodeInt32Array 解码int32数组
-func (e *StructuralMetadataEncoder) decodeInt32Array(data []byte) ([]int32, error) {
+func (m *PropertyTableManager) decodeInt32Array(data []byte) ([]int32, error) {
 	count := len(data) / 4
 	result := make([]int32, count)
 	if err := binary.Read(bytes.NewReader(data), binary.LittleEndian, &result); err != nil {
@@ -773,7 +656,7 @@ func (e *StructuralMetadataEncoder) decodeInt32Array(data []byte) ([]int32, erro
 }
 
 // decodeUint32Array 解码uint32数组
-func (e *StructuralMetadataEncoder) decodeUint32Array(data []byte) ([]uint32, error) {
+func (m *PropertyTableManager) decodeUint32Array(data []byte) ([]uint32, error) {
 	count := len(data) / 4
 	result := make([]uint32, count)
 	if err := binary.Read(bytes.NewReader(data), binary.LittleEndian, &result); err != nil {
@@ -783,7 +666,7 @@ func (e *StructuralMetadataEncoder) decodeUint32Array(data []byte) ([]uint32, er
 }
 
 // decodeInt8Array 解码int8数组
-func (e *StructuralMetadataEncoder) decodeInt8Array(data []byte) ([]int8, error) {
+func (m *PropertyTableManager) decodeInt8Array(data []byte) ([]int8, error) {
 	count := len(data)
 	result := make([]int8, count)
 	if err := binary.Read(bytes.NewReader(data), binary.LittleEndian, &result); err != nil {
@@ -792,8 +675,129 @@ func (e *StructuralMetadataEncoder) decodeInt8Array(data []byte) ([]int8, error)
 	return result, nil
 }
 
+// StructuralMetadataManager 管理结构元数据扩展
+type StructuralMetadataManager struct {
+	propertyTableManager *PropertyTableManager
+}
+
+// NewStructuralMetadataManager 创建新的元数据管理器
+func NewStructuralMetadataManager() *StructuralMetadataManager {
+	return &StructuralMetadataManager{
+		propertyTableManager: NewPropertyTableManager(),
+	}
+}
+
+// getOrCreateExtension 获取或创建结构元数据扩展
+func (m *StructuralMetadataManager) getOrCreateExtension(doc *gltf.Document) (*extgltf.ExtStructuralMetadata, error) {
+	if doc.Extensions == nil {
+		doc.Extensions = make(gltf.Extensions)
+	}
+
+	if extData, exists := doc.Extensions[extgltf.ExtensionName]; exists {
+		extDataBytes, ok := extData.([]byte)
+		if !ok {
+			return nil, fmt.Errorf("extension data is not in expected format ([]byte)")
+		}
+
+		var ext extgltf.ExtStructuralMetadata
+		if err := json.Unmarshal(extDataBytes, &ext); err != nil {
+			return nil, fmt.Errorf("error unmarshaling existing extension: %w", err)
+		}
+		return &ext, nil
+	}
+
+	// 创建新扩展
+	ext := &extgltf.ExtStructuralMetadata{
+		Schema: &Schema{
+			ID:      "default_schema",
+			Classes: make(map[string]Class),
+		},
+	}
+	return ext, nil
+}
+
+// createSchema 创建或更新元数据结构
+func (m *StructuralMetadataManager) createSchema(
+	classID string,
+	properties []PropertyData,
+	existingSchema *Schema,
+) *Schema {
+	schema := existingSchema
+	if schema == nil {
+		schema = &Schema{
+			ID:      "default_schema",
+			Classes: make(map[string]Class),
+		}
+	}
+
+	// 获取或创建类
+	class, exists := schema.Classes[classID]
+	if !exists {
+		class = Class{
+			Properties: make(map[string]ClassProperty),
+		}
+	}
+
+	// 添加属性到类
+	for _, prop := range properties {
+		classProperty := ClassProperty{
+			Type:          prop.ElementType,
+			ComponentType: &prop.ComponentType,
+		}
+		class.Properties[prop.Name] = classProperty
+	}
+
+	// 更新schema
+	schema.Classes[classID] = class
+	return schema
+}
+
+// AddPropertyTable 添加属性表到GLTF文档
+func (m *StructuralMetadataManager) AddPropertyTable(
+	doc *gltf.Document,
+	classID string,
+	properties []PropertyData,
+) (int, error) {
+	// 获取或创建扩展
+	ext, err := m.getOrCreateExtension(doc)
+	if err != nil {
+		return -1, err
+	}
+
+	// 创建或更新schema
+	ext.Schema = m.createSchema(classID, properties, ext.Schema)
+
+	// 创建属性表
+	table, err := m.propertyTableManager.createPropertyTable(doc, classID, properties, ext.Schema)
+	if err != nil {
+		return -1, err
+	}
+
+	// 添加属性表
+	if ext.PropertyTables == nil {
+		ext.PropertyTables = make([]PropertyTable, 0)
+	}
+	ext.PropertyTables = append(ext.PropertyTables, *table)
+
+	// 保存扩展
+	if err := m.SaveExtension(doc, ext); err != nil {
+		return -1, err
+	}
+
+	return len(ext.PropertyTables) - 1, nil
+}
+
+// DecodeProperty 解码属性数据
+func (m *StructuralMetadataManager) DecodeProperty(
+	doc *gltf.Document,
+	tableIndex int,
+	propertyName string,
+) (interface{}, error) {
+	return m.propertyTableManager.DecodeProperty(doc, tableIndex, propertyName)
+}
+
 // SaveExtension 保存扩展回文档
-func (e *StructuralMetadataEncoder) SaveExtension(doc *gltf.Document, ext *extgltf.ExtStructuralMetadata) error {
+func (m *StructuralMetadataManager) SaveExtension(doc *gltf.Document, ext *extgltf.ExtStructuralMetadata) error {
 	extData, err := json.Marshal(ext)
 	if err != nil {
 		return err
@@ -807,8 +811,9 @@ func (e *StructuralMetadataEncoder) SaveExtension(doc *gltf.Document, ext *extgl
 	return nil
 }
 
+// WriteStructuralMetadata 保存结构元数据到文档
 func WriteStructuralMetadata(doc *gltf.Document, class string, propertiesArray []map[string]interface{}) error {
-	encoder := NewStructuralMetadataEncoder()
+	manager := NewStructuralMetadataManager()
 
 	// 转换旧格式参数为新格式
 	props := rackProps(propertiesArray)
@@ -829,24 +834,11 @@ func WriteStructuralMetadata(doc *gltf.Document, class string, propertiesArray [
 		}
 		propData = append(propData, p)
 	}
-	ext, err := encoder.getOrCreateExtension(doc)
-	if err != nil {
-		return fmt.Errorf("获取扩展失败: %w", err)
-	}
 
-	// 复用新实现
-	if _, err = encoder.AddPropertyTable(doc, ext, class, propData); err != nil {
+	// 添加属性表
+	_, err := manager.AddPropertyTable(doc, class, propData)
+	if err != nil {
 		return fmt.Errorf("创建属性表失败: %w", err)
-	}
-	// 获取最新的扩展数据
-	ext, err = encoder.getOrCreateExtension(doc)
-	if err != nil {
-		return fmt.Errorf("获取扩展失败: %w", err)
-	}
-
-	// 保存扩展数据
-	if err := encoder.SaveExtension(doc, ext); err != nil {
-		return fmt.Errorf("保存扩展失败: %w", err)
 	}
 
 	return nil

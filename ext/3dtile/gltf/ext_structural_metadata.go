@@ -1,9 +1,18 @@
 package gltf
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"fmt"
+
+	"github.com/flywave/gltf"
+)
 
 // ExtStructuralMetadata represents the root EXT_structural_metadata object
 const ExtensionName = "EXT_structural_metadata"
+
+func init() {
+	gltf.RegisterExtension(ExtensionName, UnmarshalExtStructuralMetadata)
+}
 
 type ExtStructuralMetadata struct {
 	Schema             *Schema             `json:"schema,omitempty"`
@@ -11,6 +20,31 @@ type ExtStructuralMetadata struct {
 	PropertyTables     []PropertyTable     `json:"propertyTables,omitempty"`
 	PropertyTextures   []PropertyTexture   `json:"propertyTextures,omitempty"`
 	PropertyAttributes []PropertyAttribute `json:"propertyAttributes,omitempty"`
+}
+
+// UnmarshalExtStructuralMetadata unmarshals the EXT_structural_metadata extension data
+func UnmarshalExtStructuralMetadata(data []byte) (interface{}, error) {
+	var ext ExtStructuralMetadata
+	if err := json.Unmarshal(data, &ext); err != nil {
+		return nil, fmt.Errorf("EXT_structural_metadata parsing failed: %w", err)
+	}
+
+	// Basic validation
+	if ext.Schema == nil {
+		return nil, fmt.Errorf("schema is required")
+	}
+	if len(ext.PropertyTables) == 0 && len(ext.PropertyTextures) == 0 && len(ext.PropertyAttributes) == 0 {
+		return nil, fmt.Errorf("at least one property table, texture, or attribute is required")
+	}
+
+	// Validate property tables consistency with schema
+	for _, table := range ext.PropertyTables {
+		if _, exists := ext.Schema.Classes[table.Class]; !exists {
+			return nil, fmt.Errorf("undefined class: %s", table.Class)
+		}
+	}
+
+	return ext, nil
 }
 
 // Schema defines classes and enums
