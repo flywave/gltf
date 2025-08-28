@@ -21,6 +21,7 @@ func init() {
 }
 
 type GaussianSplatting struct {
+	// 添加一些可能需要的字段，根据规范
 }
 
 func UnmarshalGaussianSplatting(data []byte) (interface{}, error) {
@@ -32,8 +33,8 @@ func UnmarshalGaussianSplatting(data []byte) (interface{}, error) {
 }
 
 func (g *GaussianSplatting) MarshalJSON() ([]byte, error) {
-	return json.Marshal(&struct {
-	}{})
+	// 返回空对象而不是空结构体
+	return json.Marshal(map[string]interface{}{})
 }
 
 func CreateGaussianPrimitive(doc *gltf.Document, attributes map[string]uint32) *GaussianSplatting {
@@ -95,12 +96,40 @@ func ValidateRotation(rotations []float32) error {
 	}
 	return nil
 }
+
+// WireGaussianSplatting 将顶点数据连接到glTF文档中
 func WireGaussianSplatting(
 	doc *gltf.Document,
 	vertexData *VertexData,
 	compress bool,
 ) (*GaussianSplatting, error) {
+	// 验证输入数据
+	if vertexData == nil {
+		return nil, fmt.Errorf("顶点数据不能为空")
+	}
+
+	if len(vertexData.Positions) == 0 || len(vertexData.Positions)%3 != 0 {
+		return nil, fmt.Errorf("位置数据无效，必须是3的倍数")
+	}
+
+	if len(vertexData.Colors) == 0 || len(vertexData.Colors)%4 != 0 {
+		return nil, fmt.Errorf("颜色数据无效，必须是4的倍数")
+	}
+
+	if len(vertexData.Scales) == 0 || len(vertexData.Scales)%3 != 0 {
+		return nil, fmt.Errorf("缩放数据无效，必须是3的倍数")
+	}
+
+	if len(vertexData.Rotations) == 0 || len(vertexData.Rotations)%4 != 0 {
+		return nil, fmt.Errorf("旋转数据无效，必须是4的倍数")
+	}
+
 	vertexCount := len(vertexData.Positions) / 3
+	if len(vertexData.Colors)/4 != vertexCount ||
+		len(vertexData.Scales)/3 != vertexCount ||
+		len(vertexData.Rotations)/4 != vertexCount {
+		return nil, fmt.Errorf("顶点属性长度不一致")
+	}
 
 	// 1. 旋转归一化 (处理零旋转)
 	for i := 0; i < len(vertexData.Rotations); i += 4 {
@@ -124,6 +153,8 @@ func WireGaussianSplatting(
 		addExtensionUsed(doc, "EXT_meshopt_compression")
 		addExtensionUsed(doc, "KHR_mesh_quantization")
 	}
+
+	// 计算位置数据的边界框
 	var (
 		posMin = []float32{math.MaxFloat32, math.MaxFloat32, math.MaxFloat32}
 		posMax = []float32{-math.MaxFloat32, -math.MaxFloat32, -math.MaxFloat32}
@@ -262,9 +293,8 @@ func WireGaussianSplatting(
 				// 写入数据
 				switch attr.compType {
 				case gltf.ComponentUbyte:
-					// 颜色需要映射到[0,255]并应用SH0逆变换
+					// 颜色需要映射到[0,255]
 					if attr.name == "COLOR_0" {
-						// 只对RGB分量应用SH0逆变换
 						val = clamp(val, 0, 1) * 255
 					}
 					buf.WriteByte(uint8(val))
@@ -339,7 +369,9 @@ func WireGaussianSplatting(
 
 	// 添加到mesh
 	if len(doc.Meshes) == 0 {
-		doc.Meshes = append(doc.Meshes, &gltf.Mesh{})
+		doc.Meshes = append(doc.Meshes, &gltf.Mesh{
+			Name: "GaussianSplattingMesh",
+		})
 	}
 	doc.Meshes[0].Primitives = append(doc.Meshes[0].Primitives, primitive)
 
