@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	extgltf "github.com/flywave/gltf/ext/3dtile/gltf"
+
 	"github.com/flywave/go3d/mat3"
 	"github.com/flywave/go3d/mat4"
 	"github.com/stretchr/testify/assert"

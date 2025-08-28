@@ -7,55 +7,92 @@ import (
 	"github.com/flywave/gltf"
 )
 
-func TestPBRSpecularGlossiness_UnmarshalJSON(t *testing.T) {
+func TestMaterialsSpecular_UnmarshalJSON(t *testing.T) {
 	type args struct {
 		data []byte
 	}
 	tests := []struct {
 		name    string
-		p       *PBRSpecularGlossiness
+		m       *MaterialsSpecular
 		args    args
-		want    *PBRSpecularGlossiness
+		want    *MaterialsSpecular
 		wantErr bool
 	}{
-		{"default", new(PBRSpecularGlossiness), args{[]byte("{}")}, &PBRSpecularGlossiness{DiffuseFactor: &[4]float32{1, 1, 1, 1}, SpecularFactor: &[3]float32{1, 1, 1}, GlossinessFactor: gltf.Float(1)}, false},
-		{"nodefault", new(PBRSpecularGlossiness), args{[]byte(`{"diffuseFactor": [0.1,0.2,0.3,0.4],"specularFactor":[0.5,0.6,0.7],"glossinessFactor":0.5}`)}, &PBRSpecularGlossiness{
-			DiffuseFactor: &[4]float32{0.1, 0.2, 0.3, 0.4}, SpecularFactor: &[3]float32{0.5, 0.6, 0.7}, GlossinessFactor: gltf.Float(0.5),
-		}, false},
+		{
+			"default",
+			new(MaterialsSpecular),
+			args{[]byte("{}")},
+			&MaterialsSpecular{
+				SpecularFactor:      gltf.Float(1.0),
+				SpecularColorFactor: &[3]float32{1, 1, 1},
+			},
+			false,
+		},
+		{
+			"custom",
+			new(MaterialsSpecular),
+			args{[]byte(`{"specularFactor": 0.5, "specularColorFactor": [0.8, 0.6, 0.4]}`)},
+			&MaterialsSpecular{
+				SpecularFactor:      gltf.Float(0.5),
+				SpecularColorFactor: &[3]float32{0.8, 0.6, 0.4},
+			},
+			false,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if err := tt.p.UnmarshalJSON(tt.args.data); (err != nil) != tt.wantErr {
-				t.Errorf("PBRSpecularGlossiness.UnmarshalJSON() error = %v, wantErr %v", err, tt.wantErr)
+			if err := tt.m.UnmarshalJSON(tt.args.data); (err != nil) != tt.wantErr {
+				t.Errorf("MaterialsSpecular.UnmarshalJSON() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
-			if !reflect.DeepEqual(tt.p, tt.want) {
-				t.Errorf("PBRSpecularGlossiness.UnmarshalJSON() = %v, want %v", tt.p, tt.want)
+			if !reflect.DeepEqual(tt.m, tt.want) {
+				t.Errorf("MaterialsSpecular.UnmarshalJSON() = %v, want %v", tt.m, tt.want)
 			}
 		})
 	}
 }
 
-func TestPBRSpecularGlossiness_MarshalJSON(t *testing.T) {
+func TestMaterialsSpecular_MarshalJSON(t *testing.T) {
 	tests := []struct {
 		name    string
-		p       *PBRSpecularGlossiness
+		m       *MaterialsSpecular
 		want    []byte
 		wantErr bool
 	}{
-		{"default", &PBRSpecularGlossiness{GlossinessFactor: gltf.Float(1), DiffuseFactor: &[4]float32{1, 1, 1, 1}, SpecularFactor: &[3]float32{1, 1, 1}}, []byte(`{}`), false},
-		{"empty", &PBRSpecularGlossiness{}, []byte(`{}`), false},
-		{"nodefault", &PBRSpecularGlossiness{GlossinessFactor: gltf.Float(0.5), DiffuseFactor: &[4]float32{1, 0.5, 1, 1}, SpecularFactor: &[3]float32{1, 1, 0.5}}, []byte(`{"diffuseFactor":[1,0.5,1,1],"specularFactor":[1,1,0.5],"glossinessFactor":0.5}`), false},
+		{
+			"default",
+			&MaterialsSpecular{
+				SpecularFactor:      gltf.Float(1.0),
+				SpecularColorFactor: &[3]float32{1, 1, 1},
+			},
+			[]byte(`{}`),
+			false,
+		},
+		{
+			"empty",
+			&MaterialsSpecular{},
+			[]byte(`{}`),
+			false,
+		},
+		{
+			"custom",
+			&MaterialsSpecular{
+				SpecularFactor:      gltf.Float(0.5),
+				SpecularColorFactor: &[3]float32{0.8, 0.6, 0.4},
+			},
+			[]byte(`{"specularFactor":0.5,"specularColorFactor":[0.8,0.6,0.4]}`),
+			false,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := tt.p.MarshalJSON()
+			got, err := tt.m.MarshalJSON()
 			if (err != nil) != tt.wantErr {
-				t.Errorf("PBRSpecularGlossiness.MarshalJSON() error = %v, wantErr %v", err, tt.wantErr)
+				t.Errorf("MaterialsSpecular.MarshalJSON() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
 			if !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("PBRSpecularGlossiness.MarshalJSON() = %v, want %v", string(got), string(tt.want))
+				t.Errorf("MaterialsSpecular.MarshalJSON() = %v, want %v", string(got), string(tt.want))
 			}
 		})
 	}
@@ -71,7 +108,15 @@ func TestUnmarshal(t *testing.T) {
 		want    interface{}
 		wantErr bool
 	}{
-		{"base", args{[]byte("{}")}, &PBRSpecularGlossiness{DiffuseFactor: &[4]float32{1, 1, 1, 1}, SpecularFactor: &[3]float32{1, 1, 1}, GlossinessFactor: gltf.Float(1)}, false},
+		{
+			"base",
+			args{[]byte("{}")},
+			&MaterialsSpecular{
+				SpecularFactor:      gltf.Float(1.0),
+				SpecularColorFactor: &[3]float32{1, 1, 1},
+			},
+			false,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

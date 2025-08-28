@@ -3,8 +3,9 @@ package tile3d
 import (
 	"testing"
 
-	"github.com/flywave/gltf"
 	extmesh "github.com/flywave/gltf/ext/3dtile/mesh"
+
+	"github.com/flywave/gltf"
 	"github.com/stretchr/testify/assert"
 )
 

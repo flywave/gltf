@@ -4,8 +4,9 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/flywave/gltf"
 	extgltf "github.com/flywave/gltf/ext/3dtile/gltf"
+
+	"github.com/flywave/gltf"
 	"github.com/stretchr/testify/assert"
 )
 

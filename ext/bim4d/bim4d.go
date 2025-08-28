@@ -460,7 +460,7 @@ func GetWorkItems(doc *gltf.Document) []*WorkItem {
 
 func WriteInstanceBim4d(doc *gltf.Document, props []map[string]interface{}) error {
 	if len(doc.Nodes) != len(props) {
-		return nil
+		return fmt.Errorf("节点数量(%d)与属性数量(%d)不匹配", len(doc.Nodes), len(props))
 	}
 
 	for i, node := range doc.Nodes {
@@ -491,15 +491,16 @@ func WriteBatchModelBim4d(doc *gltf.Document, props []map[string]interface{}) er
 			doc.Extensions = make(map[string]interface{})
 		}
 		doc.Extensions[ExtensionName] = ext
+	} else {
+		// 如果扩展已存在，替换工作项而不是追加
+		env, ok := ext.(envelop)
+		if !ok {
+			return nil
+		}
+		env.Works = wks
+		doc.Extensions[ExtensionName] = env
 	}
 
-	env, ok := ext.(envelop)
-	if !ok {
-		return nil
-	}
-
-	env.Works = append(env.Works, wks...)
-	doc.Extensions[ExtensionName] = env
 	if err := EncodeBIM4dMetadata(doc); err != nil {
 		return err
 	}

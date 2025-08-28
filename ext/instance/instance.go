@@ -30,20 +30,37 @@ type instanceEnvelope struct {
 
 // Unmarshal 将 JSON 数据解析为扩展数据结构
 func Unmarshal(data []byte) (interface{}, error) {
-	// 尝试解析为完整扩展对象
-	var fullExt instanceEnvelope
-	if err := json.Unmarshal(data, &fullExt); err == nil && fullExt.Attributes != nil {
-		return fullExt.Attributes, nil
+	// 首先尝试解析为完整的扩展对象格式 {"attributes": {...}}
+	var fullExt map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fullExt); err != nil {
+		return nil, fmt.Errorf("无法解析 EXT_mesh_gpu_instancing 数据: %w", err)
 	}
 
-	// 尝试解析为直接的 attributes 对象
-	var directAttrs InstanceAttributes
-	if err := json.Unmarshal(data, &directAttrs); err == nil && directAttrs.Attributes != nil {
-		return &directAttrs, nil
+	// 检查是否有attributes字段
+	if attrsData, hasAttrs := fullExt["attributes"]; hasAttrs {
+		var attrs InstanceAttributes
+		attrs.Attributes = make(map[string]uint32)
+		if err := json.Unmarshal(attrsData, &attrs.Attributes); err != nil {
+			return nil, fmt.Errorf("无法解析 attributes 数据: %w", err)
+		}
+		return &attrs, nil
 	}
 
-	// 两种格式都失败，返回错误
-	return nil, fmt.Errorf("无法解析 EXT_mesh_gpu_instancing 数据")
+	// 如果没有attributes字段，尝试直接解析为attributes映射
+	var directAttrs map[string]uint32
+	if err := json.Unmarshal(data, &directAttrs); err != nil {
+		return nil, fmt.Errorf("无法解析 EXT_mesh_gpu_instancing 数据: %w", err)
+	}
+
+	// 确保至少有一个属性
+	if len(directAttrs) == 0 {
+		return nil, fmt.Errorf("EXT_mesh_gpu_instancing 数据不能为空")
+	}
+
+	attrs := &InstanceAttributes{
+		Attributes: directAttrs,
+	}
+	return attrs, nil
 }
 
 type InstanceConfig struct {
@@ -578,4 +595,121 @@ func addBufferView(doc *gltf.Document, data []byte) (uint32, error) {
 
 	doc.BufferViews = append(doc.BufferViews, view)
 	return uint32(len(doc.BufferViews) - 1), nil
+}
+
+// SetInstanceExtension sets the EXT_mesh_gpu_instancing extension on a node
+func SetInstanceExtension(node *gltf.Node, attributes map[string]uint32) error {
+	if node.Extensions == nil {
+		node.Extensions = make(gltf.Extensions)
+	}
+
+	// Create the extension
+	ext := InstanceAttributes{
+		Attributes: attributes,
+	}
+
+	// Marshal the extension data
+	extData, err := json.Marshal(ext)
+	if err != nil {
+		return fmt.Errorf("error marshaling EXT_mesh_gpu_instancing extension: %w", err)
+	}
+
+	node.Extensions[ExtensionName] = extData
+	return nil
+}
+
+// GetInstanceExtension gets the EXT_mesh_gpu_instancing extension from a node
+func GetInstanceExtension(node *gltf.Node) (*InstanceAttributes, error) {
+	if node.Extensions == nil {
+		return nil, fmt.Errorf("no extensions found")
+	}
+
+	extData, exists := node.Extensions[ExtensionName]
+	if !exists {
+		return nil, fmt.Errorf("%s extension not found", ExtensionName)
+	}
+
+	// Type assertion
+	extDataBytes, ok := extData.([]byte)
+	if !ok {
+		return nil, fmt.Errorf("extension data is not in expected format ([]byte)")
+	}
+
+	// Unmarshal the extension data
+	ext, err := Unmarshal(extDataBytes)
+	if err != nil {
+		return nil, fmt.Errorf("error unmarshaling EXT_mesh_gpu_instancing extension: %w", err)
+	}
+
+	attrs, ok := ext.(*InstanceAttributes)
+	if !ok {
+		return nil, fmt.Errorf("extension data is not of expected type (*InstanceAttributes)")
+	}
+
+	return attrs, nil
+}
+
+// ValidateInstanceAttributes validates that the instance attributes conform to the specification
+func ValidateInstanceAttributes(doc *gltf.Document, attributes map[string]uint32) error {
+	if len(attributes) == 0 {
+		return fmt.Errorf("at least one attribute is required")
+	}
+
+	var count *uint32
+
+	// Check each attribute
+	for name, accessorIdx := range attributes {
+		// Validate accessor index
+		if int(accessorIdx) >= len(doc.Accessors) {
+			return fmt.Errorf("invalid accessor index %d for attribute %s", accessorIdx, name)
+		}
+
+		accessor := doc.Accessors[accessorIdx]
+
+		// Validate attribute name and type combinations
+		switch name {
+		case "TRANSLATION":
+			if accessor.Type != gltf.AccessorVec3 {
+				return fmt.Errorf("TRANSLATION attribute must have VEC3 type, got %s", accessor.Type)
+			}
+			if accessor.ComponentType != gltf.ComponentFloat {
+				return fmt.Errorf("TRANSLATION attribute must have FLOAT component type, got %d", accessor.ComponentType)
+			}
+		case "ROTATION":
+			if accessor.Type != gltf.AccessorVec4 {
+				return fmt.Errorf("ROTATION attribute must have VEC4 type, got %s", accessor.Type)
+			}
+			if accessor.ComponentType != gltf.ComponentFloat &&
+				accessor.ComponentType != gltf.ComponentByte &&
+				accessor.ComponentType != gltf.ComponentShort {
+				return fmt.Errorf("ROTATION attribute must have FLOAT, BYTE, or SHORT component type, got %d", accessor.ComponentType)
+			}
+			// BYTE and SHORT components must be normalized
+			if (accessor.ComponentType == gltf.ComponentByte || accessor.ComponentType == gltf.ComponentShort) && !accessor.Normalized {
+				return fmt.Errorf("ROTATION attribute with BYTE or SHORT component type must be normalized")
+			}
+		case "SCALE":
+			if accessor.Type != gltf.AccessorVec3 {
+				return fmt.Errorf("SCALE attribute must have VEC3 type, got %s", accessor.Type)
+			}
+			if accessor.ComponentType != gltf.ComponentFloat {
+				return fmt.Errorf("SCALE attribute must have FLOAT component type, got %d", accessor.ComponentType)
+			}
+		default:
+			// Custom attributes (prefixed with underscore) are allowed
+			if len(name) > 0 && name[0] != '_' {
+				// Non-standard attribute names should be prefixed with underscore
+				return fmt.Errorf("custom attribute names should be prefixed with underscore, got %s", name)
+			}
+		}
+
+		// Ensure all attributes have the same count
+		if count == nil {
+			count = &accessor.Count
+		} else if *count != accessor.Count {
+			return fmt.Errorf("all attribute accessors must have the same count, got %d and %d", *count, accessor.Count)
+		}
+	}
+
+	return nil
 }
