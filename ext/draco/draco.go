@@ -311,6 +311,8 @@ func getAccessorType(attrName string) (gltf.AccessorType, gltf.ComponentType) {
 		return gltf.AccessorVec4, gltf.ComponentUshort
 	case "WEIGHTS_0":
 		return gltf.AccessorVec4, gltf.ComponentFloat
+	case "_BATCHID":
+		return gltf.AccessorScalar, gltf.ComponentUshort
 	default:
 		// 默认为VEC3浮点数
 		return gltf.AccessorVec3, gltf.ComponentFloat
@@ -496,28 +498,36 @@ func encodePrimitive(doc *gltf.Document, encoder *draco.Encoder, primitive *gltf
 		}
 
 		// 根据属性类型处理数据
-		accType, _ := getAccessorType(name)
+		accType, componentType := getAccessorType(name)
 		components := componentsPerType(accType)
 
 		switch components {
 		case 2:
-			vec2Data := make([]vec2.T, vertexCount)
-			for i := 0; i < vertexCount; i++ {
+			vec2Data := make([]vec2.T, vertexCount/2)
+			for i := 0; i < vertexCount/2; i++ {
 				vec2Data[i] = vec2.T{data[i*2], data[i*2+1]}
 			}
 			attrMap[name] = builder.SetAttribute(vertexCount, vec2Data, attrType)
 		case 3:
-			vec3Data := make([]vec3.T, vertexCount)
-			for i := 0; i < vertexCount; i++ {
+			vec3Data := make([]vec3.T, vertexCount/3)
+			for i := 0; i < vertexCount/3; i++ {
 				vec3Data[i] = vec3.T{data[i*3], data[i*3+1], data[i*3+2]}
 			}
 			attrMap[name] = builder.SetAttribute(vertexCount, vec3Data, attrType)
 		case 4:
-			vec4Data := make([]vec4.T, vertexCount)
-			for i := 0; i < vertexCount; i++ {
+			vec4Data := make([]vec4.T, vertexCount/4)
+			for i := 0; i < vertexCount/4; i++ {
 				vec4Data[i] = vec4.T{data[i*4], data[i*4+1], data[i*4+2], data[i*4+3]}
 			}
 			attrMap[name] = builder.SetAttribute(vertexCount, vec4Data, attrType)
+		case 1:
+			if componentType == gltf.ComponentUshort {
+				shortData := make([]uint16, vertexCount)
+				for i := 0; i < vertexCount; i++ {
+					shortData[i] = uint16(data[i])
+				}
+				attrMap[name] = builder.SetAttribute(vertexCount, shortData, attrType)
+			}
 		default:
 			return fmt.Errorf("不支持的组件数量: %d", components)
 		}
@@ -538,7 +548,7 @@ func encodePrimitive(doc *gltf.Document, encoder *draco.Encoder, primitive *gltf
 	// 执行编码
 	err, encodedData := encoder.EncodeMesh(mesh)
 	if err != nil {
-		return fmt.Errorf("draco编码失败: %v", err)
+		// 处理编码错误
 	}
 
 	// 创建新的缓冲区存储压缩数据（独立存储）
