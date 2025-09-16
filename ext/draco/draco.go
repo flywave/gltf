@@ -311,7 +311,7 @@ func getAccessorType(attrName string) (gltf.AccessorType, gltf.ComponentType) {
 		return gltf.AccessorVec4, gltf.ComponentUshort
 	case "WEIGHTS_0":
 		return gltf.AccessorVec4, gltf.ComponentFloat
-	case "_BATCHID":
+	case "_BATCHID", "_FEATURE_ID_0":
 		return gltf.AccessorScalar, gltf.ComponentUshort
 	default:
 		// 默认为VEC3浮点数
