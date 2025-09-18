@@ -248,3 +248,12 @@ func TestCleanUpUnusedResources(t *testing.T) {
 	assert.Equal(t, 2, len(doc.Buffers), "应保留所有缓冲区")
 	assert.Equal(t, 2, len(doc.BufferViews), "应保留所有缓冲区视图")
 }
+
+func TestBug(t *testing.T) {
+	doc, err := gltf.Open("../../testdata/Draco/debug.glb")
+	require.NoError(t, err)
+
+	err = EncodeAll(doc, nil)
+	assert.NoError(t, err, "编码应成功")
+	gltf.SaveBinary(doc, "./bug.glb")
+}

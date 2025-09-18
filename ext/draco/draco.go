@@ -88,7 +88,6 @@ func decodePrimitive(doc *gltf.Document, primitive *gltf.Primitive) error {
 	// Draco解码
 	decoder := draco.NewDecoder()
 	mesh := draco.NewMesh()
-	defer mesh.Free()
 
 	err := decoder.DecodeMesh(mesh, compressedData)
 	if err != nil {
@@ -449,6 +448,12 @@ func encodePrimitive(doc *gltf.Document, encoder *draco.Encoder, primitive *gltf
 		return fmt.Errorf("解析索引数据失败: %w", err)
 	}
 
+	// 设置面数据
+	faceCount := len(indices) / 3
+	if faceCount*3 != len(indices) {
+		return fmt.Errorf("索引数量必须是3的倍数")
+	}
+
 	// 获取位置数据
 	positionAccessor := doc.Accessors[primitive.Attributes["POSITION"]]
 	positionData, err := parseAttributeData(doc, positionAccessor)
@@ -463,8 +468,7 @@ func encodePrimitive(doc *gltf.Document, encoder *draco.Encoder, primitive *gltf
 
 	// 创建Draco网格
 	builder := draco.NewMeshBuilder()
-	defer builder.Free()
-	builder.Start(vertexCount)
+	builder.Start(faceCount)
 
 	// 添加位置属性
 	posData := make([]vec3.T, vertexCount)
@@ -475,7 +479,7 @@ func encodePrimitive(doc *gltf.Document, encoder *draco.Encoder, primitive *gltf
 			positionData[i*3+2],
 		}
 	}
-	posIndex := builder.SetAttribute(vertexCount, posData, draco.GAT_POSITION)
+	posIndex := builder.SetAttribute(faceCount, posData, draco.GAT_POSITION)
 
 	attrMap := make(map[string]uint32)
 	attrMap["POSITION"] = posIndex
@@ -507,40 +511,33 @@ func encodePrimitive(doc *gltf.Document, encoder *draco.Encoder, primitive *gltf
 			for i := 0; i < vertexCount/2; i++ {
 				vec2Data[i] = vec2.T{data[i*2], data[i*2+1]}
 			}
-			attrMap[name] = builder.SetAttribute(vertexCount, vec2Data, attrType)
+			attrMap[name] = builder.SetAttribute(faceCount, vec2Data, attrType)
 		case 3:
 			vec3Data := make([]vec3.T, vertexCount/3)
 			for i := 0; i < vertexCount/3; i++ {
 				vec3Data[i] = vec3.T{data[i*3], data[i*3+1], data[i*3+2]}
 			}
-			attrMap[name] = builder.SetAttribute(vertexCount, vec3Data, attrType)
+			attrMap[name] = builder.SetAttribute(faceCount, vec3Data, attrType)
 		case 4:
 			vec4Data := make([]vec4.T, vertexCount/4)
 			for i := 0; i < vertexCount/4; i++ {
 				vec4Data[i] = vec4.T{data[i*4], data[i*4+1], data[i*4+2], data[i*4+3]}
 			}
-			attrMap[name] = builder.SetAttribute(vertexCount, vec4Data, attrType)
+			attrMap[name] = builder.SetAttribute(faceCount, vec4Data, attrType)
 		case 1:
 			if componentType == gltf.ComponentUshort {
 				shortData := make([]uint16, vertexCount)
 				for i := 0; i < vertexCount; i++ {
 					shortData[i] = uint16(data[i])
 				}
-				attrMap[name] = builder.SetAttribute(vertexCount, shortData, attrType)
+				attrMap[name] = builder.SetAttribute(faceCount, shortData, attrType)
 			}
 		default:
 			return fmt.Errorf("不支持的组件数量: %d", components)
 		}
 	}
 
-	// 设置面数据
-	faceCount := len(indices) / 3
-	if faceCount*3 != len(indices) {
-		return fmt.Errorf("索引数量必须是3的倍数")
-	}
-
 	mesh := builder.GetMesh()
-	defer mesh.Free()
 
 	// 配置编码参数
 	applyEncoderOptions(encoder, options)
@@ -548,7 +545,7 @@ func encodePrimitive(doc *gltf.Document, encoder *draco.Encoder, primitive *gltf
 	// 执行编码
 	err, encodedData := encoder.EncodeMesh(mesh)
 	if err != nil {
-		return fmt.Errorf("draco编码失败: %v", err)
+		fmt.Printf("draco编码失败: %v", err)
 	}
 
 	// 创建新的缓冲区存储压缩数据（独立存储）
