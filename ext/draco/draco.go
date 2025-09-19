@@ -545,7 +545,7 @@ func encodePrimitive(doc *gltf.Document, encoder *draco.Encoder, primitive *gltf
 	// 执行编码
 	err, encodedData := encoder.EncodeMesh(mesh)
 	if err != nil {
-		fmt.Printf("draco编码失败: %v", err)
+		return fmt.Errorf("draco编码失败: %w", err)
 	}
 
 	// 创建新的缓冲区存储压缩数据（独立存储）
