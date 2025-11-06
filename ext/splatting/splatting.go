@@ -368,12 +368,49 @@ func WireGaussianSplatting(
 	}
 
 	// 添加到mesh
+	meshIndex := 0
 	if len(doc.Meshes) == 0 {
 		doc.Meshes = append(doc.Meshes, &gltf.Mesh{
 			Name: "GaussianSplattingMesh",
 		})
+	} else {
+		// 找到或创建高斯泼溅专用网格
+		meshFound := false
+		for i, mesh := range doc.Meshes {
+			if mesh.Name == "GaussianSplattingMesh" {
+				meshIndex = i
+				meshFound = true
+				break
+			}
+		}
+		if !meshFound {
+			doc.Meshes = append(doc.Meshes, &gltf.Mesh{
+				Name: "GaussianSplattingMesh",
+			})
+			meshIndex = len(doc.Meshes) - 1
+		}
 	}
-	doc.Meshes[0].Primitives = append(doc.Meshes[0].Primitives, primitive)
+	doc.Meshes[meshIndex].Primitives = append(doc.Meshes[meshIndex].Primitives, primitive)
+
+	// 创建节点并添加到文档中
+	node := &gltf.Node{
+		Name: "GaussianSplattingNode",
+		Mesh: gltf.Index(uint32(meshIndex)),
+	}
+	doc.Nodes = append(doc.Nodes, node)
+	nodeIndex := uint32(len(doc.Nodes) - 1)
+
+	// 如果场景为空，创建默认场景并添加节点
+	if len(doc.Scenes) == 0 {
+		doc.Scenes = append(doc.Scenes, &gltf.Scene{
+			Name: "Default Scene",
+		})
+	}
+	if doc.Scene == nil {
+		doc.Scene = gltf.Index(0)
+	}
+	// 将节点添加到默认场景（或第一个场景）
+	doc.Scenes[*doc.Scene].Nodes = append(doc.Scenes[*doc.Scene].Nodes, nodeIndex)
 
 	return gs, nil
 }
