@@ -132,21 +132,21 @@ func WireGaussianSplatting(
 	}
 
 	// 1. 旋转归一化 (处理零旋转)
-	for i := 0; i < len(vertexData.Rotations); i += 4 {
-		q := vertexData.Rotations[i : i+4]
-		lenSq := q[0]*q[0] + q[1]*q[1] + q[2]*q[2] + q[3]*q[3]
+	// for i := 0; i < len(vertexData.Rotations); i += 4 {
+	// 	q := vertexData.Rotations[i : i+4]
+	// 	lenSq := q[0]*q[0] + q[1]*q[1] + q[2]*q[2] + q[3]*q[3]
 
-		if lenSq > 1e-6 { // 只对非零向量归一化
-			lenInv := 1 / float32(math.Sqrt(float64(lenSq)))
-			q[0] *= lenInv
-			q[1] *= lenInv
-			q[2] *= lenInv
-			q[3] *= lenInv
-		} else {
-			// 设置默认单位四元数
-			q[0], q[1], q[2], q[3] = 1, 0, 0, 0
-		}
-	}
+	// 	if lenSq > 1e-6 { // 只对非零向量归一化
+	// 		lenInv := 1 / float32(math.Sqrt(float64(lenSq)))
+	// 		q[0] *= lenInv
+	// 		q[1] *= lenInv
+	// 		q[2] *= lenInv
+	// 		q[3] *= lenInv
+	// 	} else {
+	// 		// 设置默认单位四元数
+	// 		q[0], q[1], q[2], q[3] = 1, 0, 0, 0
+	// 	}
+	// }
 
 	// 添加必要的扩展声明
 	if compress {
