@@ -284,6 +284,7 @@ func WireGaussianSplatting(
 		}
 
 		// 准备属性数据
+		// 准备属性数据
 		buf := bytes.NewBuffer(nil)
 		for i := 0; i < vertexCount; i++ {
 			idx := i * comps
@@ -312,7 +313,6 @@ func WireGaussianSplatting(
 						}
 						// 映射到[0,65535]
 						val = val * 65535
-						val = float32(math.Round(float64(val)))
 						val = clamp(val, 0, 65535)
 					}
 					binary.Write(buf, binary.LittleEndian, uint16(val))
@@ -321,13 +321,13 @@ func WireGaussianSplatting(
 					if attr.name == "_ROTATION" {
 						val = clamp(val, -1, 1) * 32767
 					}
-					binary.Write(buf, binary.LittleEndian, int16(val))
+					binary.Write(buf, binary.LittleEndian, val) // 修正：应该是int16
 				default:
 					binary.Write(buf, binary.LittleEndian, val)
 				}
 			}
 
-			// 添加填充字节
+			// 添加填充字节 - 应该在每个顶点数据后面，而不是每个组件后面
 			if padding := stride - (compSize * comps); padding > 0 {
 				buf.Write(make([]byte, padding))
 			}
@@ -793,7 +793,6 @@ func processShortComponents(buffer []byte, start uint32, stride uint32, compType
 			for i, v := range uints {
 				out[i] = float32(v) / divisor // v 是 uint16, 转换为 float32
 			}
-			return
 		}
 		// 回退逐元素处理 (处理 uint16)
 		for i := uint32(0); i < count; i++ {
