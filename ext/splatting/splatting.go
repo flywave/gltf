@@ -132,21 +132,21 @@ func WireGaussianSplatting(
 	}
 
 	// 1. 旋转归一化 (处理零旋转)
-	for i := 0; i < len(vertexData.Rotations); i += 4 {
-		q := vertexData.Rotations[i : i+4]
-		lenSq := q[0]*q[0] + q[1]*q[1] + q[2]*q[2] + q[3]*q[3]
+	// for i := 0; i < len(vertexData.Rotations); i += 4 {
+	// 	q := vertexData.Rotations[i : i+4]
+	// 	lenSq := q[0]*q[0] + q[1]*q[1] + q[2]*q[2] + q[3]*q[3]
 
-		if lenSq > 1e-6 { // 只对非零向量归一化
-			lenInv := 1 / float32(math.Sqrt(float64(lenSq)))
-			q[0] *= lenInv
-			q[1] *= lenInv
-			q[2] *= lenInv
-			q[3] *= lenInv
-		} else {
-			// 设置默认单位四元数
-			q[0], q[1], q[2], q[3] = 1, 0, 0, 0
-		}
-	}
+	// 	if lenSq > 1e-6 { // 只对非零向量归一化
+	// 		lenInv := 1 / float32(math.Sqrt(float64(lenSq)))
+	// 		q[0] *= lenInv
+	// 		q[1] *= lenInv
+	// 		q[2] *= lenInv
+	// 		q[3] *= lenInv
+	// 	} else {
+	// 		// 设置默认单位四元数
+	// 		q[0], q[1], q[2], q[3] = 1, 0, 0, 0
+	// 	}
+	// }
 
 	// 添加必要的扩展声明
 	if compress {
@@ -284,6 +284,7 @@ func WireGaussianSplatting(
 		}
 
 		// 准备属性数据
+		// 准备属性数据
 		buf := bytes.NewBuffer(nil)
 		for i := 0; i < vertexCount; i++ {
 			idx := i * comps
@@ -312,7 +313,6 @@ func WireGaussianSplatting(
 						}
 						// 映射到[0,65535]
 						val = val * 65535
-						val = float32(math.Round(float64(val)))
 						val = clamp(val, 0, 65535)
 					}
 					binary.Write(buf, binary.LittleEndian, uint16(val))
@@ -321,13 +321,13 @@ func WireGaussianSplatting(
 					if attr.name == "_ROTATION" {
 						val = clamp(val, -1, 1) * 32767
 					}
-					binary.Write(buf, binary.LittleEndian, int16(val))
+					binary.Write(buf, binary.LittleEndian, val) // 修正：应该是int16
 				default:
 					binary.Write(buf, binary.LittleEndian, val)
 				}
 			}
 
-			// 添加填充字节
+			// 添加填充字节 - 应该在每个顶点数据后面，而不是每个组件后面
 			if padding := stride - (compSize * comps); padding > 0 {
 				buf.Write(make([]byte, padding))
 			}
@@ -368,12 +368,49 @@ func WireGaussianSplatting(
 	}
 
 	// 添加到mesh
+	meshIndex := 0
 	if len(doc.Meshes) == 0 {
 		doc.Meshes = append(doc.Meshes, &gltf.Mesh{
 			Name: "GaussianSplattingMesh",
 		})
+	} else {
+		// 找到或创建高斯泼溅专用网格
+		meshFound := false
+		for i, mesh := range doc.Meshes {
+			if mesh.Name == "GaussianSplattingMesh" {
+				meshIndex = i
+				meshFound = true
+				break
+			}
+		}
+		if !meshFound {
+			doc.Meshes = append(doc.Meshes, &gltf.Mesh{
+				Name: "GaussianSplattingMesh",
+			})
+			meshIndex = len(doc.Meshes) - 1
+		}
 	}
-	doc.Meshes[0].Primitives = append(doc.Meshes[0].Primitives, primitive)
+	doc.Meshes[meshIndex].Primitives = append(doc.Meshes[meshIndex].Primitives, primitive)
+
+	// 创建节点并添加到文档中
+	node := &gltf.Node{
+		Name: "GaussianSplattingNode",
+		Mesh: gltf.Index(uint32(meshIndex)),
+	}
+	doc.Nodes = append(doc.Nodes, node)
+	nodeIndex := uint32(len(doc.Nodes) - 1)
+
+	// 如果场景为空，创建默认场景并添加节点
+	if len(doc.Scenes) == 0 {
+		doc.Scenes = append(doc.Scenes, &gltf.Scene{
+			Name: "Default Scene",
+		})
+	}
+	if doc.Scene == nil {
+		doc.Scene = gltf.Index(0)
+	}
+	// 将节点添加到默认场景（或第一个场景）
+	doc.Scenes[*doc.Scene].Nodes = append(doc.Scenes[*doc.Scene].Nodes, nodeIndex)
 
 	return gs, nil
 }
@@ -756,7 +793,6 @@ func processShortComponents(buffer []byte, start uint32, stride uint32, compType
 			for i, v := range uints {
 				out[i] = float32(v) / divisor // v 是 uint16, 转换为 float32
 			}
-			return
 		}
 		// 回退逐元素处理 (处理 uint16)
 		for i := uint32(0); i < count; i++ {
