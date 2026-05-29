@@ -74,6 +74,7 @@ type Joint struct {
 	Limits        *Limits     `json:"limits,omitempty"`
 	Path          *JointPath  `json:"path,omitempty"`
 	Value         *float64    `json:"value,omitempty"`
+	Values        []float64   `json:"values,omitempty"`
 }
 
 type JointDocument struct {
