@@ -3,6 +3,8 @@ package texturebasisu
 import (
 	"encoding/json"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestExtTextureBasisu(t *testing.T) {
@@ -39,6 +41,36 @@ func TestSettersAndGetters(t *testing.T) {
 	ext.SetSource(5)
 	if ext.GetSource() != 5 {
 		t.Errorf("Expected source 5, got %d", ext.GetSource())
+	}
+}
+
+func TestExtTextureBasisu_RoundTrip(t *testing.T) {
+	orig := &ExtTextureBasisu{
+		Source: 3,
+	}
+	data, err := json.Marshal(orig)
+	require.NoError(t, err)
+	got, err := UnmarshalExtTextureBasisu(data)
+	require.NoError(t, err)
+	require.Equal(t, orig, got)
+}
+
+func TestExtTextureBasisu_NonZeroSource(t *testing.T) {
+	ext := &ExtTextureBasisu{
+		Source: 7,
+	}
+	data, err := json.Marshal(ext)
+	require.NoError(t, err)
+
+	unmarshaled, err := UnmarshalExtTextureBasisu(data)
+	require.NoError(t, err)
+
+	extBasisu, ok := unmarshaled.(*ExtTextureBasisu)
+	if !ok {
+		t.Fatal("Unmarshaled object is not of type *ExtTextureBasisu")
+	}
+	if extBasisu.GetSource() != 7 {
+		t.Errorf("Expected source 7, got %d", extBasisu.GetSource())
 	}
 }
 

@@ -90,9 +90,11 @@ func Example_fullUsage() {
 	fmt.Printf("Created a scene with %d instanced cubes\n", instanceData.InstanceCount())
 	fmt.Printf("Mesh: %s\n", mesh.Name)
 	fmt.Printf("Node: %s\n", node.Name)
-	fmt.Println("Instance attributes:")
-	for name, accessorIdx := range attributes {
-		fmt.Printf("  %s: accessor %d\n", name, accessorIdx)
+	fmt.Printf("Instance attributes: %d total\n", len(attributes))
+	for _, name := range []string{"TRANSLATION", "ROTATION", "SCALE"} {
+		if idx, ok := attributes[name]; ok {
+			fmt.Printf("  %s: accessor %d\n", name, idx)
+		}
 	}
 
 	// Convert to matrices to show the transformation data
@@ -109,7 +111,7 @@ func Example_fullUsage() {
 	// Created a scene with 4 instanced cubes
 	// Mesh: Cube
 	// Node: InstancedCubes
-	// Instance attributes:
+	// Instance attributes: 3 total
 	//   TRANSLATION: accessor 2
 	//   ROTATION: accessor 3
 	//   SCALE: accessor 4

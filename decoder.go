@@ -147,27 +147,30 @@ func (d *Decoder) decodeBuffer(buffer *Buffer, doc *Document, bufferIndex int) e
 	if err := d.validateBuffer(buffer); err != nil {
 		return err
 	}
-	// 检查是否有bufferView引用此缓冲区
-	isReferenced := false
-	for _, bv := range doc.BufferViews {
-		if bv.Buffer == uint32(bufferIndex) {
-			isReferenced = true
-			break
-		}
-	}
-	if buffer.URI == "" && !isReferenced {
-		return errors.New("gltf: buffer without URI")
-	}
+
 	var err error
 	if buffer.IsEmbeddedResource() {
 		buffer.Data, err = buffer.MarshalData()
-	} else if !isReferenced {
+	} else if buffer.URI != "" {
 		err = validateBufferURI(buffer.URI)
 		if err == nil && d.Fsys != nil {
 			buffer.Data, err = fs.ReadFile(d.Fsys, buffer.URI)
 			if len(buffer.Data) > int(buffer.ByteLength) {
 				buffer.Data = buffer.Data[:buffer.ByteLength:buffer.ByteLength]
 			}
+		}
+	} else {
+		isReferenced := false
+		if doc != nil {
+			for _, bv := range doc.BufferViews {
+				if bv.Buffer == uint32(bufferIndex) {
+					isReferenced = true
+					break
+				}
+			}
+		}
+		if !isReferenced {
+			return errors.New("gltf: buffer without URI")
 		}
 	}
 	if err != nil {

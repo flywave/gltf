@@ -1,6 +1,7 @@
 package gltf
 
 import (
+	"fmt"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -295,35 +296,33 @@ func TestPBRMetallicRoughness_RoughnessFactorOrDefault(t *testing.T) {
 }
 
 func TestSizeOfElement(t *testing.T) {
-	type args struct {
-		c ComponentType
-		t AccessorType
-	}
-	tests := []struct {
-		name string
-		args args
-		want uint32
-	}{
-		{"byte-vec2", args{ComponentByte, AccessorVec2}, 4},
-		{"ubyte-vec2", args{ComponentUbyte, AccessorVec2}, 4},
-		{"byte-vec3", args{ComponentByte, AccessorVec3}, 4},
-		{"ubyte-vec3", args{ComponentUbyte, AccessorVec3}, 4},
-		{"short-vec3", args{ComponentShort, AccessorVec3}, 8},
-		{"ushort-vec3", args{ComponentUshort, AccessorVec3}, 8},
-		{"byte-mat2", args{ComponentByte, AccessorMat2}, 8},
-		{"ubyte-mat2", args{ComponentUbyte, AccessorMat2}, 8},
-		{"byte-mat3", args{ComponentByte, AccessorMat3}, 12},
-		{"ubyte-mat3", args{ComponentUbyte, AccessorMat3}, 12},
-		{"short-mat3", args{ComponentShort, AccessorMat3}, 24},
-		{"ushort-mat3", args{ComponentUshort, AccessorMat3}, 24},
-		{"other", args{ComponentUshort, AccessorMat4}, 32},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := SizeOfElement(tt.args.c, tt.args.t); got != tt.want {
-				t.Errorf("SizeOfElement() = %v, want %v", got, tt.want)
+	allComponentTypes := []ComponentType{ComponentByte, ComponentUbyte, ComponentShort, ComponentUshort, ComponentUint, ComponentFloat}
+	allAccessorTypes := []AccessorType{AccessorScalar, AccessorVec2, AccessorVec3, AccessorVec4, AccessorMat2, AccessorMat3, AccessorMat4}
+	for _, ct := range allComponentTypes {
+		for _, at := range allAccessorTypes {
+			name := fmt.Sprintf("%d-%d", ct, at)
+			csize := ct.ByteSize()
+			acnt := at.Components()
+			want := csize * acnt
+			// Apply alignment special cases
+			switch {
+			case (at == AccessorVec3 || at == AccessorVec2) && (ct == ComponentByte || ct == ComponentUbyte):
+				want = 4
+			case at == AccessorVec3 && (ct == ComponentShort || ct == ComponentUshort):
+				want = 8
+			case at == AccessorMat2 && (ct == ComponentByte || ct == ComponentUbyte):
+				want = 8
+			case at == AccessorMat3 && (ct == ComponentByte || ct == ComponentUbyte):
+				want = 12
+			case at == AccessorMat3 && (ct == ComponentShort || ct == ComponentUshort):
+				want = 24
 			}
-		})
+			t.Run(name, func(t1 *testing.T) {
+				if got := SizeOfElement(ct, at); got != want {
+					t1.Errorf("SizeOfElement(%v, %v) = %d, want %d", ct, at, got, want)
+				}
+			})
+		}
 	}
 }
 

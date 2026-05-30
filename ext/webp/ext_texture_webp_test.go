@@ -3,6 +3,8 @@ package webp
 import (
 	"encoding/json"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestExtTextureWebp(t *testing.T) {
@@ -61,6 +63,34 @@ func TestUnmarshalExtTextureWebpWithNilSource(t *testing.T) {
 	if err != nil {
 		t.Errorf("Failed to unmarshal ExtTextureWebp with nil source: %v", err)
 	}
+}
+
+func TestExtTextureWebp_RoundTrip(t *testing.T) {
+	source := uint32(3)
+	orig := &ExtTextureWebp{
+		Source: &source,
+	}
+	data, err := json.Marshal(orig)
+	require.NoError(t, err)
+	got, err := UnmarshalExtTextureWebp(data)
+	require.NoError(t, err)
+	require.Equal(t, orig, got)
+}
+
+func TestExtTextureWebp_RoundTripWithExtensions(t *testing.T) {
+	source := uint32(1)
+	orig := &ExtTextureWebp{
+		Source: &source,
+		Extensions: map[string]json.RawMessage{
+			"KHR_materials_sheen": json.RawMessage(`{}`),
+		},
+		Extras: json.RawMessage(`{"key":"value"}`),
+	}
+	data, err := json.Marshal(orig)
+	require.NoError(t, err)
+	got, err := UnmarshalExtTextureWebp(data)
+	require.NoError(t, err)
+	require.Equal(t, orig, got)
 }
 
 func TestUnmarshalExtTextureWebpWithInvalidData(t *testing.T) {

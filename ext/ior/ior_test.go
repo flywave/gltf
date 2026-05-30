@@ -1,10 +1,12 @@
 package ior
 
 import (
+	"encoding/json"
 	"reflect"
 	"testing"
 
 	"github.com/flywave/gltf"
+	"github.com/stretchr/testify/require"
 )
 
 func TestMaterialsIOR_UnmarshalJSON(t *testing.T) {
@@ -92,6 +94,18 @@ func TestMaterialsIOR_MarshalJSON(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestMaterialsIOR_RoundTrip(t *testing.T) {
+	orig := &MaterialsIOR{
+		IOR: gltf.Float(1.4),
+	}
+	data, err := json.Marshal(orig)
+	require.NoError(t, err)
+	got := new(MaterialsIOR)
+	err = json.Unmarshal(data, got)
+	require.NoError(t, err)
+	require.Equal(t, orig, got)
 }
 
 func TestUnmarshal(t *testing.T) {

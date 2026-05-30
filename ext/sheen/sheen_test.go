@@ -1,10 +1,12 @@
 package sheen
 
 import (
+	"encoding/json"
 	"reflect"
 	"testing"
 
 	"github.com/flywave/gltf"
+	"github.com/stretchr/testify/require"
 )
 
 func TestMaterialsSheen_UnmarshalJSON(t *testing.T) {
@@ -35,6 +37,18 @@ func TestMaterialsSheen_UnmarshalJSON(t *testing.T) {
 			&MaterialsSheen{
 				SheenColorFactor:     &[3]float32{0.9, 0.9, 0.9},
 				SheenRoughnessFactor: gltf.Float(0.5),
+			},
+			false,
+		},
+		{
+			"withTextures",
+			new(MaterialsSheen),
+			args{[]byte(`{"sheenColorFactor":[0.5,0.5,0.5],"sheenRoughnessFactor":0.3,"sheenColorTexture":{"index":0,"texCoord":1},"sheenRoughnessTexture":{"index":1}}`)},
+			&MaterialsSheen{
+				SheenColorFactor:      &[3]float32{0.5, 0.5, 0.5},
+				SheenRoughnessFactor:  gltf.Float(0.3),
+				SheenColorTexture:     &gltf.TextureInfo{Index: 0, TexCoord: 1},
+				SheenRoughnessTexture: &gltf.TextureInfo{Index: 1},
 			},
 			false,
 		},
@@ -83,6 +97,17 @@ func TestMaterialsSheen_MarshalJSON(t *testing.T) {
 			[]byte(`{"sheenColorFactor":[0.9,0.9,0.9],"sheenRoughnessFactor":0.5}`),
 			false,
 		},
+		{
+			"withTextures",
+			&MaterialsSheen{
+				SheenColorFactor:      &[3]float32{0.5, 0.5, 0.5},
+				SheenRoughnessFactor:  gltf.Float(0.3),
+				SheenColorTexture:     &gltf.TextureInfo{Index: 0, TexCoord: 1},
+				SheenRoughnessTexture: &gltf.TextureInfo{Index: 1},
+			},
+			[]byte(`{"sheenColorFactor":[0.5,0.5,0.5],"sheenColorTexture":{"index":0,"texCoord":1},"sheenRoughnessFactor":0.3,"sheenRoughnessTexture":{"index":1}}`),
+			false,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -96,6 +121,21 @@ func TestMaterialsSheen_MarshalJSON(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestMaterialsSheen_RoundTrip(t *testing.T) {
+	orig := &MaterialsSheen{
+		SheenColorFactor:      &[3]float32{0.5, 0.5, 0.5},
+		SheenRoughnessFactor:  gltf.Float(0.3),
+		SheenColorTexture:     &gltf.TextureInfo{Index: 0, TexCoord: 1},
+		SheenRoughnessTexture: &gltf.TextureInfo{Index: 1},
+	}
+	data, err := json.Marshal(orig)
+	require.NoError(t, err)
+	got := new(MaterialsSheen)
+	err = json.Unmarshal(data, got)
+	require.NoError(t, err)
+	require.Equal(t, orig, got)
 }
 
 func TestUnmarshal(t *testing.T) {

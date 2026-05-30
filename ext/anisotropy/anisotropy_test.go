@@ -1,10 +1,12 @@
 package anisotropy
 
 import (
+	"encoding/json"
 	"reflect"
 	"testing"
 
 	"github.com/flywave/gltf"
+	"github.com/stretchr/testify/require"
 )
 
 func TestMaterialsAnisotropy_UnmarshalJSON(t *testing.T) {
@@ -35,6 +37,17 @@ func TestMaterialsAnisotropy_UnmarshalJSON(t *testing.T) {
 			&MaterialsAnisotropy{
 				AnisotropyStrength: gltf.Float(0.6),
 				AnisotropyRotation: gltf.Float(1.57),
+			},
+			false,
+		},
+		{
+			"withTexture",
+			new(MaterialsAnisotropy),
+			args{[]byte(`{"anisotropyStrength":0.5,"anisotropyRotation":0.3,"anisotropyTexture":{"index":0,"texCoord":1}}`)},
+			&MaterialsAnisotropy{
+				AnisotropyStrength: gltf.Float(0.5),
+				AnisotropyRotation: gltf.Float(0.3),
+				AnisotropyTexture:  &gltf.TextureInfo{Index: 0, TexCoord: 1},
 			},
 			false,
 		},
@@ -83,6 +96,16 @@ func TestMaterialsAnisotropy_MarshalJSON(t *testing.T) {
 			[]byte(`{"anisotropyStrength":0.6,"anisotropyRotation":1.57}`),
 			false,
 		},
+		{
+			"withTexture",
+			&MaterialsAnisotropy{
+				AnisotropyStrength: gltf.Float(0.5),
+				AnisotropyRotation: gltf.Float(0.3),
+				AnisotropyTexture:  &gltf.TextureInfo{Index: 0, TexCoord: 1},
+			},
+			[]byte(`{"anisotropyStrength":0.5,"anisotropyRotation":0.3,"anisotropyTexture":{"index":0,"texCoord":1}}`),
+			false,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -96,6 +119,20 @@ func TestMaterialsAnisotropy_MarshalJSON(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestMaterialsAnisotropy_RoundTrip(t *testing.T) {
+	orig := &MaterialsAnisotropy{
+		AnisotropyStrength: gltf.Float(0.5),
+		AnisotropyRotation: gltf.Float(0.3),
+		AnisotropyTexture:  &gltf.TextureInfo{Index: 0, TexCoord: 1},
+	}
+	data, err := json.Marshal(orig)
+	require.NoError(t, err)
+	got := new(MaterialsAnisotropy)
+	err = json.Unmarshal(data, got)
+	require.NoError(t, err)
+	require.Equal(t, orig, got)
 }
 
 func TestUnmarshal(t *testing.T) {

@@ -342,3 +342,132 @@ func Test_byteComponent_Scalar(t *testing.T) {
 		})
 	}
 }
+
+func TestRead_WithByteStride(t *testing.T) {
+	// Create interleaved buffer: position (Vec3 float32) + normal (Vec3 float32) interleaved
+	// stride = 24 bytes (6 float32s), position data at offset 0, normal at offset 12
+	stride := uint32(24)
+	// 2 vertices: pos0, nrm0, pos1, nrm1
+	buf := make([]byte, 2*int(stride))
+	// pos0 = (1,2,3), nrm0 = (0,0,1)
+	Float.PutVec3(buf[0:], [3]float32{1, 2, 3})
+	Float.PutVec3(buf[12:], [3]float32{0, 0, 1})
+	// pos1 = (4,5,6), nrm1 = (0,1,0)
+	Float.PutVec3(buf[int(stride)+0:], [3]float32{4, 5, 6})
+	Float.PutVec3(buf[int(stride)+12:], [3]float32{0, 1, 0})
+
+	positions := make([][3]float32, 2)
+	if err := Read(buf, stride, positions); err != nil {
+		t.Fatalf("Read() error = %v", err)
+	}
+	if positions[0] != [3]float32{1, 2, 3} {
+		t.Errorf("positions[0] = %v, want [1 2 3]", positions[0])
+	}
+	if positions[1] != [3]float32{4, 5, 6} {
+		t.Errorf("positions[1] = %v, want [4 5 6]", positions[1])
+	}
+}
+
+func TestWrite_WithByteStride(t *testing.T) {
+	stride := uint32(16)
+	// Write 2 Vec3 float32 into 32 byte buffer (stride=16)
+	positions := [][3]float32{{1, 2, 3}, {4, 5, 6}}
+	buf := make([]byte, 2*int(stride))
+
+	if err := Write(buf, stride, positions); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+
+	// Read back
+	got := make([][3]float32, 2)
+	if err := Read(buf, stride, got); err != nil {
+		t.Fatalf("Read() error = %v", err)
+	}
+	if got[0] != positions[0] || got[1] != positions[1] {
+		t.Errorf("Read() = %v, want %v", got, positions)
+	}
+}
+
+func TestComponent_Vec2_Vec3_Vec4_Mat(t *testing.T) {
+	// Float Vec2
+	t.Run("Float_Vec2", func(t *testing.T) {
+		b := make([]byte, 8)
+		Float.PutVec2(b, [2]float32{1.5, 2.5})
+		if got := Float.Vec2(b); got != [2]float32{1.5, 2.5} {
+			t.Errorf("PutVec2/Vec2 = %v, want [1.5 2.5]", got)
+		}
+	})
+	// Float Vec3
+	t.Run("Float_Vec3", func(t *testing.T) {
+		b := make([]byte, 12)
+		Float.PutVec3(b, [3]float32{1, 2, 3})
+		if got := Float.Vec3(b); got != [3]float32{1, 2, 3} {
+			t.Errorf("PutVec3/Vec3 = %v, want [1 2 3]", got)
+		}
+	})
+	// Float Vec4
+	t.Run("Float_Vec4", func(t *testing.T) {
+		b := make([]byte, 16)
+		Float.PutVec4(b, [4]float32{1, 2, 3, 4})
+		if got := Float.Vec4(b); got != [4]float32{1, 2, 3, 4} {
+			t.Errorf("PutVec4/Vec4 = %v, want [1 2 3 4]", got)
+		}
+	})
+	// Float Mat2
+	t.Run("Float_Mat2", func(t *testing.T) {
+		b := make([]byte, 16)
+		Float.PutMat2(b, [2][2]float32{{1, 2}, {3, 4}})
+		if got := Float.Mat2(b); got != [2][2]float32{{1, 2}, {3, 4}} {
+			t.Errorf("PutMat2/Mat2 = %v, want [[1 2] [3 4]]", got)
+		}
+	})
+	// Float Mat3
+	t.Run("Float_Mat3", func(t *testing.T) {
+		b := make([]byte, 36)
+		Float.PutMat3(b, [3][3]float32{{1, 2, 3}, {4, 5, 6}, {7, 8, 9}})
+		if got := Float.Mat3(b); got != [3][3]float32{{1, 2, 3}, {4, 5, 6}, {7, 8, 9}} {
+			t.Errorf("PutMat3/Mat3 = %v, want [[1 2 3] [4 5 6] [7 8 9]]", got)
+		}
+	})
+	// Float Mat4
+	t.Run("Float_Mat4", func(t *testing.T) {
+		b := make([]byte, 64)
+		v := [4][4]float32{{1, 2, 3, 4}, {5, 6, 7, 8}, {9, 10, 11, 12}, {13, 14, 15, 16}}
+		Float.PutMat4(b, v)
+		if got := Float.Mat4(b); got != v {
+			t.Errorf("PutMat4/Mat4 = %v, want %v", got, v)
+		}
+	})
+	// Short Vec3
+	t.Run("Short_Vec3", func(t *testing.T) {
+		b := make([]byte, 6)
+		Short.PutVec3(b, [3]int16{1, -2, 3})
+		if got := Short.Vec3(b); got != [3]int16{1, -2, 3} {
+			t.Errorf("Short Vec3 = %v, want [1 -2 3]", got)
+		}
+	})
+	// Ushort Vec2
+	t.Run("Ushort_Vec2", func(t *testing.T) {
+		b := make([]byte, 4)
+		Ushort.PutVec2(b, [2]uint16{10, 20})
+		if got := Ushort.Vec2(b); got != [2]uint16{10, 20} {
+			t.Errorf("Ushort Vec2 = %v, want [10 20]", got)
+		}
+	})
+	// Uint Vec4
+	t.Run("Uint_Vec4", func(t *testing.T) {
+		b := make([]byte, 16)
+		Uint.PutVec4(b, [4]uint32{100, 200, 300, 400})
+		if got := Uint.Vec4(b); got != [4]uint32{100, 200, 300, 400} {
+			t.Errorf("Uint Vec4 = %v, want [100 200 300 400]", got)
+		}
+	})
+	// Uint Mat2
+	t.Run("Uint_Mat2", func(t *testing.T) {
+		b := make([]byte, 16)
+		Uint.PutMat2(b, [2][2]uint32{{1, 2}, {3, 4}})
+		if got := Uint.Mat2(b); got != [2][2]uint32{{1, 2}, {3, 4}} {
+			t.Errorf("Uint Mat2 = %v, want [[1 2] [3 4]]", got)
+		}
+	})
+}

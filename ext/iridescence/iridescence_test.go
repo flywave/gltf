@@ -1,10 +1,12 @@
 package iridescence
 
 import (
+	"encoding/json"
 	"reflect"
 	"testing"
 
 	"github.com/flywave/gltf"
+	"github.com/stretchr/testify/require"
 )
 
 func TestMaterialsIridescence_UnmarshalJSON(t *testing.T) {
@@ -39,6 +41,20 @@ func TestMaterialsIridescence_UnmarshalJSON(t *testing.T) {
 				IridescenceIor:              gltf.Float(1.5),
 				IridescenceThicknessMinimum: gltf.Float(100.0),
 				IridescenceThicknessMaximum: gltf.Float(500.0),
+			},
+			false,
+		},
+		{
+			"withTextures",
+			new(MaterialsIridescence),
+			args{[]byte(`{"iridescenceFactor":0.5,"iridescenceIor":1.4,"iridescenceThicknessMinimum":200,"iridescenceThicknessMaximum":600,"iridescenceTexture":{"index":0,"texCoord":1},"iridescenceThicknessTexture":{"index":1}}`)},
+			&MaterialsIridescence{
+				IridescenceFactor:           gltf.Float(0.5),
+				IridescenceIor:              gltf.Float(1.4),
+				IridescenceThicknessMinimum: gltf.Float(200),
+				IridescenceThicknessMaximum: gltf.Float(600),
+				IridescenceTexture:          &gltf.TextureInfo{Index: 0, TexCoord: 1},
+				IridescenceThicknessTexture: &gltf.TextureInfo{Index: 1},
 			},
 			false,
 		},
@@ -91,6 +107,19 @@ func TestMaterialsIridescence_MarshalJSON(t *testing.T) {
 			[]byte(`{"iridescenceFactor":1,"iridescenceIor":1.5,"iridescenceThicknessMinimum":200,"iridescenceThicknessMaximum":500}`),
 			false,
 		},
+		{
+			"withTextures",
+			&MaterialsIridescence{
+				IridescenceFactor:           gltf.Float(0.5),
+				IridescenceIor:              gltf.Float(1.4),
+				IridescenceThicknessMinimum: gltf.Float(200),
+				IridescenceThicknessMaximum: gltf.Float(600),
+				IridescenceTexture:          &gltf.TextureInfo{Index: 0, TexCoord: 1},
+				IridescenceThicknessTexture: &gltf.TextureInfo{Index: 1},
+			},
+			[]byte(`{"iridescenceFactor":0.5,"iridescenceTexture":{"index":0,"texCoord":1},"iridescenceIor":1.4,"iridescenceThicknessMinimum":200,"iridescenceThicknessMaximum":600,"iridescenceThicknessTexture":{"index":1}}`),
+			false,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -104,6 +133,23 @@ func TestMaterialsIridescence_MarshalJSON(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestMaterialsIridescence_RoundTrip(t *testing.T) {
+	orig := &MaterialsIridescence{
+		IridescenceFactor:           gltf.Float(0.5),
+		IridescenceIor:              gltf.Float(1.4),
+		IridescenceThicknessMinimum: gltf.Float(200),
+		IridescenceThicknessMaximum: gltf.Float(600),
+		IridescenceTexture:          &gltf.TextureInfo{Index: 0, TexCoord: 1},
+		IridescenceThicknessTexture: &gltf.TextureInfo{Index: 1},
+	}
+	data, err := json.Marshal(orig)
+	require.NoError(t, err)
+	got := new(MaterialsIridescence)
+	err = json.Unmarshal(data, got)
+	require.NoError(t, err)
+	require.Equal(t, orig, got)
 }
 
 func TestUnmarshal(t *testing.T) {

@@ -618,6 +618,8 @@ func TestCamera_MarshalJSON(t *testing.T) {
 		wantErr bool
 	}{
 		{"empty", &Camera{}, nil, true},
+		{"perspective", &Camera{Perspective: &Perspective{Yfov: 0.7, Znear: 0.01}}, []byte(`{"type":"perspective","perspective":{"yfov":0.7,"znear":0.01}}`), false},
+		{"orthographic", &Camera{Orthographic: &Orthographic{Xmag: 1, Ymag: 1, Zfar: 100, Znear: 0}}, []byte(`{"type":"orthographic","orthographic":{"xmag":1,"ymag":1,"zfar":100,"znear":0}}`), false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -627,7 +629,36 @@ func TestCamera_MarshalJSON(t *testing.T) {
 				return
 			}
 			if !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("Camera.MarshalJSON() = %v, want %v", got, tt.want)
+				t.Errorf("Camera.MarshalJSON() = %v, want %v", string(got), string(tt.want))
+			}
+		})
+	}
+}
+
+func TestCamera_UnmarshalJSON(t *testing.T) {
+	tests := []struct {
+		name    string
+		data    []byte
+		want    *Camera
+		wantErr bool
+	}{
+		{"perspective", []byte(`{"perspective":{"aspectRatio":1,"yfov":0.7,"zfar":100,"znear":0.01},"type":"perspective"}`),
+			&Camera{Perspective: &Perspective{AspectRatio: Float(1), Yfov: 0.7, Zfar: Float(100), Znear: 0.01}}, false},
+		{"orthographic", []byte(`{"orthographic":{"xmag":1,"ymag":1,"zfar":100,"znear":0},"type":"orthographic"}`),
+			&Camera{Orthographic: &Orthographic{Xmag: 1, Ymag: 1, Zfar: 100, Znear: 0}}, false},
+		{"both", []byte(`{"perspective":{"yfov":0.7,"znear":0.01},"orthographic":{"xmag":1,"ymag":1,"zfar":100,"znear":0},"type":"perspective"}`), nil, true},
+		{"none", []byte(`{"type":"perspective"}`), nil, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var c Camera
+			err := json.Unmarshal(tt.data, &c)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Camera.UnmarshalJSON() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if err == nil && !reflect.DeepEqual(&c, tt.want) {
+				t.Errorf("Camera.UnmarshalJSON() = %v, want %v", &c, tt.want)
 			}
 		})
 	}

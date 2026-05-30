@@ -1,10 +1,12 @@
 package clearcoat
 
 import (
+	"encoding/json"
 	"reflect"
 	"testing"
 
 	"github.com/flywave/gltf"
+	"github.com/stretchr/testify/require"
 )
 
 func TestMaterialsClearcoat_UnmarshalJSON(t *testing.T) {
@@ -35,6 +37,23 @@ func TestMaterialsClearcoat_UnmarshalJSON(t *testing.T) {
 			&MaterialsClearcoat{
 				ClearcoatFactor:          gltf.Float(1.0),
 				ClearcoatRoughnessFactor: gltf.Float(0.5),
+			},
+			false,
+		},
+		{
+			"withTextures",
+			new(MaterialsClearcoat),
+			args{[]byte(`{"clearcoatFactor":0.8,"clearcoatRoughnessFactor":0.3,"clearcoatTexture":{"index":0,"texCoord":1},"clearcoatRoughnessTexture":{"index":1},"clearcoatNormalTexture":{"index":2,"scale":0.5,"texCoord":1}}`)},
+			&MaterialsClearcoat{
+				ClearcoatFactor:          gltf.Float(0.8),
+				ClearcoatRoughnessFactor: gltf.Float(0.3),
+				ClearcoatTexture:         &gltf.TextureInfo{Index: 0, TexCoord: 1},
+				ClearcoatRoughnessTexture: &gltf.TextureInfo{Index: 1},
+				ClearcoatNormalTexture: &gltf.NormalTexture{
+					Index:   gltf.Index(2),
+					Scale:   gltf.Float(0.5),
+					TexCoord: 1,
+				},
 			},
 			false,
 		},
@@ -83,6 +102,22 @@ func TestMaterialsClearcoat_MarshalJSON(t *testing.T) {
 			[]byte(`{"clearcoatFactor":1,"clearcoatRoughnessFactor":0.5}`),
 			false,
 		},
+		{
+			"withTextures",
+			&MaterialsClearcoat{
+				ClearcoatFactor:          gltf.Float(0.8),
+				ClearcoatRoughnessFactor: gltf.Float(0.3),
+				ClearcoatTexture:         &gltf.TextureInfo{Index: 0, TexCoord: 1},
+				ClearcoatRoughnessTexture: &gltf.TextureInfo{Index: 1},
+				ClearcoatNormalTexture: &gltf.NormalTexture{
+					Index:   gltf.Index(2),
+					Scale:   gltf.Float(0.5),
+					TexCoord: 1,
+				},
+			},
+			[]byte(`{"clearcoatFactor":0.8,"clearcoatTexture":{"index":0,"texCoord":1},"clearcoatRoughnessFactor":0.3,"clearcoatRoughnessTexture":{"index":1},"clearcoatNormalTexture":{"index":2,"texCoord":1,"scale":0.5}}`),
+			false,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -96,6 +131,26 @@ func TestMaterialsClearcoat_MarshalJSON(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestMaterialsClearcoat_RoundTrip(t *testing.T) {
+	orig := &MaterialsClearcoat{
+		ClearcoatFactor:          gltf.Float(0.8),
+		ClearcoatRoughnessFactor: gltf.Float(0.3),
+		ClearcoatTexture:         &gltf.TextureInfo{Index: 0, TexCoord: 1},
+		ClearcoatRoughnessTexture: &gltf.TextureInfo{Index: 1},
+		ClearcoatNormalTexture: &gltf.NormalTexture{
+			Index:   gltf.Index(2),
+			Scale:   gltf.Float(0.5),
+			TexCoord: 1,
+		},
+	}
+	data, err := json.Marshal(orig)
+	require.NoError(t, err)
+	got := new(MaterialsClearcoat)
+	err = json.Unmarshal(data, got)
+	require.NoError(t, err)
+	require.Equal(t, orig, got)
 }
 
 func TestUnmarshal(t *testing.T) {

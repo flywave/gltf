@@ -1,10 +1,12 @@
 package volume
 
 import (
+	"encoding/json"
 	"reflect"
 	"testing"
 
 	"github.com/flywave/gltf"
+	"github.com/stretchr/testify/require"
 )
 
 func TestMaterialsVolume_UnmarshalJSON(t *testing.T) {
@@ -37,6 +39,18 @@ func TestMaterialsVolume_UnmarshalJSON(t *testing.T) {
 				ThicknessFactor:     gltf.Float(1.0),
 				AttenuationDistance: gltf.Float(0.006),
 				AttenuationColor:    &[3]float32{0.5, 0.5, 0.5},
+			},
+			false,
+		},
+		{
+			"withTexture",
+			new(MaterialsVolume),
+			args{[]byte(`{"thicknessFactor":0.5,"thicknessTexture":{"index":0,"texCoord":1},"attenuationDistance":0.1,"attenuationColor":[0.8,0.8,0.8]}`)},
+			&MaterialsVolume{
+				ThicknessFactor:     gltf.Float(0.5),
+				ThicknessTexture:    &gltf.TextureInfo{Index: 0, TexCoord: 1},
+				AttenuationDistance: gltf.Float(0.1),
+				AttenuationColor:    &[3]float32{0.8, 0.8, 0.8},
 			},
 			false,
 		},
@@ -87,6 +101,17 @@ func TestMaterialsVolume_MarshalJSON(t *testing.T) {
 			[]byte(`{"thicknessFactor":1,"attenuationDistance":0.006,"attenuationColor":[0.5,0.5,0.5]}`),
 			false,
 		},
+		{
+			"withTexture",
+			&MaterialsVolume{
+				ThicknessFactor:     gltf.Float(0.5),
+				ThicknessTexture:    &gltf.TextureInfo{Index: 0, TexCoord: 1},
+				AttenuationDistance: gltf.Float(0.1),
+				AttenuationColor:    &[3]float32{0.8, 0.8, 0.8},
+			},
+			[]byte(`{"thicknessFactor":0.5,"thicknessTexture":{"index":0,"texCoord":1},"attenuationDistance":0.1,"attenuationColor":[0.8,0.8,0.8]}`),
+			false,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -100,6 +125,21 @@ func TestMaterialsVolume_MarshalJSON(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestMaterialsVolume_RoundTrip(t *testing.T) {
+	orig := &MaterialsVolume{
+		ThicknessFactor:     gltf.Float(0.5),
+		ThicknessTexture:    &gltf.TextureInfo{Index: 0, TexCoord: 1},
+		AttenuationDistance: gltf.Float(0.1),
+		AttenuationColor:    &[3]float32{0.8, 0.8, 0.8},
+	}
+	data, err := json.Marshal(orig)
+	require.NoError(t, err)
+	got := new(MaterialsVolume)
+	err = json.Unmarshal(data, got)
+	require.NoError(t, err)
+	require.Equal(t, orig, got)
 }
 
 func TestUnmarshal(t *testing.T) {

@@ -1,10 +1,12 @@
 package transmission
 
 import (
+	"encoding/json"
 	"reflect"
 	"testing"
 
 	"github.com/flywave/gltf"
+	"github.com/stretchr/testify/require"
 )
 
 func TestMaterialsTransmission_UnmarshalJSON(t *testing.T) {
@@ -33,6 +35,16 @@ func TestMaterialsTransmission_UnmarshalJSON(t *testing.T) {
 			args{[]byte(`{"transmissionFactor": 0.8}`)},
 			&MaterialsTransmission{
 				TransmissionFactor: gltf.Float(0.8),
+			},
+			false,
+		},
+		{
+			"withTexture",
+			new(MaterialsTransmission),
+			args{[]byte(`{"transmissionFactor":0.5,"transmissionTexture":{"index":0,"texCoord":1}}`)},
+			&MaterialsTransmission{
+				TransmissionFactor:  gltf.Float(0.5),
+				TransmissionTexture: &gltf.TextureInfo{Index: 0, TexCoord: 1},
 			},
 			false,
 		},
@@ -79,6 +91,15 @@ func TestMaterialsTransmission_MarshalJSON(t *testing.T) {
 			[]byte(`{"transmissionFactor":0.8}`),
 			false,
 		},
+		{
+			"withTexture",
+			&MaterialsTransmission{
+				TransmissionFactor:  gltf.Float(0.5),
+				TransmissionTexture: &gltf.TextureInfo{Index: 0, TexCoord: 1},
+			},
+			[]byte(`{"transmissionFactor":0.5,"transmissionTexture":{"index":0,"texCoord":1}}`),
+			false,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -92,6 +113,19 @@ func TestMaterialsTransmission_MarshalJSON(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestMaterialsTransmission_RoundTrip(t *testing.T) {
+	orig := &MaterialsTransmission{
+		TransmissionFactor:  gltf.Float(0.5),
+		TransmissionTexture: &gltf.TextureInfo{Index: 0, TexCoord: 1},
+	}
+	data, err := json.Marshal(orig)
+	require.NoError(t, err)
+	got := new(MaterialsTransmission)
+	err = json.Unmarshal(data, got)
+	require.NoError(t, err)
+	require.Equal(t, orig, got)
 }
 
 func TestUnmarshal(t *testing.T) {

@@ -301,6 +301,27 @@ func (n *Node) MarshalJSON() ([]byte, error) {
 	return json.Marshal(tmp)
 }
 
+// UnmarshalJSON unmarshal the camera with the correct default values.
+func (c *Camera) UnmarshalJSON(data []byte) error {
+	type alias Camera
+	tmp := &struct {
+		Type string `json:"type"`
+		*alias
+	}{
+		alias: (*alias)(c),
+	}
+	if err := json.Unmarshal(data, tmp); err != nil {
+		return err
+	}
+	if c.Perspective == nil && c.Orthographic == nil {
+		return errors.New("gltf: camera must define either the perspective or orthographic property")
+	}
+	if c.Perspective != nil && c.Orthographic != nil {
+		return errors.New("gltf: camera must not define both perspective and orthographic")
+	}
+	return nil
+}
+
 // MarshalJSON marshal the camera with the correct default values.
 func (c *Camera) MarshalJSON() ([]byte, error) {
 	type alias Camera

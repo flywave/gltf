@@ -1,10 +1,12 @@
 package emissivestrength
 
 import (
+	"encoding/json"
 	"reflect"
 	"testing"
 
 	"github.com/flywave/gltf"
+	"github.com/stretchr/testify/require"
 )
 
 func TestMaterialsEmissiveStrength_UnmarshalJSON(t *testing.T) {
@@ -92,6 +94,18 @@ func TestMaterialsEmissiveStrength_MarshalJSON(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestMaterialsEmissiveStrength_RoundTrip(t *testing.T) {
+	orig := &MaterialsEmissiveStrength{
+		EmissiveStrength: gltf.Float(5.0),
+	}
+	data, err := json.Marshal(orig)
+	require.NoError(t, err)
+	got := new(MaterialsEmissiveStrength)
+	err = json.Unmarshal(data, got)
+	require.NoError(t, err)
+	require.Equal(t, orig, got)
 }
 
 func TestUnmarshal(t *testing.T) {
