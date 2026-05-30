@@ -1,6 +1,7 @@
 package cesium
 
 import (
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 
@@ -32,27 +33,47 @@ func UnmarshalCesiumPrimitiveOutline(data []byte) (interface{}, error) {
 	return ext, nil
 }
 
-// SetCesiumOutline sets the Cesium outline vertex indices for a primitive
-func SetCesiumOutline(primitive *gltf.Primitive, indices []uint32, accessorName string) error {
+// SetCesiumOutline sets the Cesium outline vertex indices for a primitive.
+// doc is the parent document; indices are triangle edge indices referencing the primitive's vertices.
+func SetCesiumOutline(doc *gltf.Document, primitive *gltf.Primitive, indices []uint32) error {
+	if len(indices) == 0 {
+		return fmt.Errorf("outline indices must not be empty")
+	}
+
+	// Write indices as uint32 into a new buffer
+	data := make([]byte, len(indices)*4)
+	for i, idx := range indices {
+		binary.LittleEndian.PutUint32(data[i*4:], idx)
+	}
+
+	buf := &gltf.Buffer{ByteLength: uint32(len(data)), Data: data}
+	doc.Buffers = append(doc.Buffers, buf)
+	bufIdx := uint32(len(doc.Buffers) - 1)
+
+	bv := &gltf.BufferView{
+		Buffer:     bufIdx,
+		ByteOffset: 0,
+		ByteLength: buf.ByteLength,
+		Target:     gltf.TargetElementArrayBuffer,
+	}
+	doc.BufferViews = append(doc.BufferViews, bv)
+	bvIdx := uint32(len(doc.BufferViews) - 1)
+
+	acc := &gltf.Accessor{
+		BufferView:    &bvIdx,
+		ComponentType: gltf.ComponentUint,
+		Count:         uint32(len(indices)),
+		Type:          gltf.AccessorScalar,
+	}
+	doc.Accessors = append(doc.Accessors, acc)
+	accIdx := uint32(len(doc.Accessors) - 1)
+
 	if primitive.Extensions == nil {
 		primitive.Extensions = make(gltf.Extensions)
 	}
-
-	// Create accessor for the indices
-	// Note: In a full implementation, you would create a buffer view and accessor
-	// For now, we'll just create a placeholder
-
-	// Create the extension
-	ext := CesiumPrimitiveOutline{}
-
-	// Add the extension to the primitive
-	extData, err := json.Marshal(ext)
-	if err != nil {
-		return fmt.Errorf("error marshaling CESIUM_primitive_outline extension: %w", err)
+	primitive.Extensions[ExtensionName] = &CesiumPrimitiveOutline{
+		Indices: &accIdx,
 	}
-
-	primitive.Extensions[ExtensionName] = extData
-	// Note: ExtensionUsed should be added to the document, not the primitive
 	return nil
 }
 
@@ -67,18 +88,20 @@ func GetCesiumOutline(primitive *gltf.Primitive) (*CesiumPrimitiveOutline, error
 		return nil, fmt.Errorf("%s extension not found", ExtensionName)
 	}
 
-	// Type assertion
-	extDataBytes, ok := extData.([]byte)
-	if !ok {
-		return nil, fmt.Errorf("extension data is not in expected format ([]byte)")
+	switch v := extData.(type) {
+	case *CesiumPrimitiveOutline:
+		return v, nil
+	case CesiumPrimitiveOutline:
+		return &v, nil
+	case []byte:
+		var ext CesiumPrimitiveOutline
+		if err := json.Unmarshal(v, &ext); err != nil {
+			return nil, fmt.Errorf("error unmarshaling CESIUM_primitive_outline extension: %w", err)
+		}
+		return &ext, nil
+	default:
+		return nil, fmt.Errorf("extension data is not in expected format")
 	}
-
-	var ext CesiumPrimitiveOutline
-	if err := json.Unmarshal(extDataBytes, &ext); err != nil {
-		return nil, fmt.Errorf("error unmarshaling CESIUM_primitive_outline extension: %w", err)
-	}
-
-	return &ext, nil
 }
 
 // ValidateCesiumOutlineIndices validates that all indices are within the range of the mesh primitive indices

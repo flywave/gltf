@@ -29,18 +29,17 @@ func UnmarshalExtStructuralMetadata(data []byte) (interface{}, error) {
 		return nil, fmt.Errorf("EXT_structural_metadata parsing failed: %w", err)
 	}
 
-	// Basic validation
-	if ext.Schema == nil {
-		return nil, fmt.Errorf("schema is required")
-	}
-	if len(ext.PropertyTables) == 0 && len(ext.PropertyTextures) == 0 && len(ext.PropertyAttributes) == 0 {
-		return nil, fmt.Errorf("at least one property table, texture, or attribute is required")
+	// Basic validation: at least one of schema or schemaUri must be present
+	if ext.Schema == nil && (ext.SchemaURI == nil || *ext.SchemaURI == "") {
+		return nil, fmt.Errorf("schema or schemaUri is required")
 	}
 
-	// Validate property tables consistency with schema
-	for _, table := range ext.PropertyTables {
-		if _, exists := ext.Schema.Classes[table.Class]; !exists {
-			return nil, fmt.Errorf("undefined class: %s", table.Class)
+	// Validate property tables consistency with schema (only if schema is available)
+	if ext.Schema != nil {
+		for _, table := range ext.PropertyTables {
+			if _, exists := ext.Schema.Classes[table.Class]; !exists {
+				return nil, fmt.Errorf("undefined class: %s", table.Class)
+			}
 		}
 	}
 
@@ -49,7 +48,7 @@ func UnmarshalExtStructuralMetadata(data []byte) (interface{}, error) {
 
 // Schema defines classes and enums
 type Schema struct {
-	ID          string                     `json:"id"`
+	ID          *string                    `json:"id,omitempty"`
 	Name        *string                    `json:"name,omitempty"`
 	Description *string                    `json:"description,omitempty"`
 	Version     *string                    `json:"version,omitempty"`
@@ -63,7 +62,7 @@ type Schema struct {
 type Class struct {
 	Name        *string                    `json:"name,omitempty"`
 	Description *string                    `json:"description,omitempty"`
-	Properties  map[string]ClassProperty   `json:"properties,omitempty"`
+	Properties  map[string]ClassProperty   `json:"properties"`
 	Extensions  map[string]json.RawMessage `json:"extensions,omitempty"`
 	Extras      json.RawMessage            `json:"extras,omitempty"`
 }
@@ -146,11 +145,22 @@ type Enum struct {
 	Extras      json.RawMessage            `json:"extras,omitempty"`
 }
 
+// UnmarshalJSON implements json.Unmarshaler with default valueType=UINT16
+func (e *Enum) UnmarshalJSON(data []byte) error {
+	type alias Enum
+	tmp := alias(Enum{ValueType: EnumValueTypeUint16})
+	if err := json.Unmarshal(data, &tmp); err != nil {
+		return err
+	}
+	*e = Enum(tmp)
+	return nil
+}
+
 // EnumValue defines a value within an enum
 type EnumValue struct {
 	Name        string  `json:"name"`
 	Description *string `json:"description,omitempty"`
-	Value       int32   `json:"value"`
+	Value       int64   `json:"value"`
 }
 
 // PropertyTable contains property values
@@ -158,7 +168,7 @@ type PropertyTable struct {
 	Name       *string                          `json:"name,omitempty"`
 	Class      string                           `json:"class"`
 	Count      uint32                           `json:"count"`
-	Properties map[string]PropertyTableProperty `json:"properties,omitempty"`
+	Properties map[string]PropertyTableProperty `json:"properties"`
 	Extensions map[string]json.RawMessage       `json:"extensions,omitempty"`
 	Extras     json.RawMessage                  `json:"extras,omitempty"`
 }
@@ -167,23 +177,31 @@ type PropertyTable struct {
 type PropertyTexture struct {
 	Name       *string                            `json:"name,omitempty"`
 	Class      string                             `json:"class"`
-	Properties map[string]PropertyTextureProperty `json:"properties,omitempty"`
+	Properties map[string]PropertyTextureProperty `json:"properties"`
+	Extensions map[string]json.RawMessage         `json:"extensions,omitempty"`
+	Extras     json.RawMessage                    `json:"extras,omitempty"`
 }
 
 // PropertyTextureProperty defines texture-based property storage
 type PropertyTextureProperty struct {
-	Channels []uint32        `json:"channels,omitempty"`
-	Offset   json.RawMessage `json:"offset,omitempty"`
-	Scale    json.RawMessage `json:"scale,omitempty"`
-	Max      json.RawMessage `json:"max,omitempty"`
-	Min      json.RawMessage `json:"min,omitempty"`
+	Index    uint32           `json:"index"`
+	TexCoord *uint32          `json:"texCoord,omitempty"`
+	Channels []uint32         `json:"channels"`
+	Offset   json.RawMessage  `json:"offset,omitempty"`
+	Scale    json.RawMessage  `json:"scale,omitempty"`
+	Max      json.RawMessage  `json:"max,omitempty"`
+	Min      json.RawMessage  `json:"min,omitempty"`
+	Extensions map[string]json.RawMessage `json:"extensions,omitempty"`
+	Extras     json.RawMessage            `json:"extras,omitempty"`
 }
 
 // PropertyAttribute contains attribute-based property values
 type PropertyAttribute struct {
 	Name       *string                              `json:"name,omitempty"`
 	Class      string                               `json:"class"`
-	Properties map[string]PropertyAttributeProperty `json:"properties,omitempty"`
+	Properties map[string]PropertyAttributeProperty `json:"properties"`
+	Extensions map[string]json.RawMessage           `json:"extensions,omitempty"`
+	Extras     json.RawMessage                      `json:"extras,omitempty"`
 }
 
 // PropertyAttributeProperty defines attribute-based property storage
@@ -218,6 +236,20 @@ type PropertyTableProperty struct {
 	Min              json.RawMessage            `json:"min,omitempty"`
 	Extensions       map[string]json.RawMessage `json:"extensions,omitempty"`
 	Extras           json.RawMessage            `json:"extras,omitempty"`
+}
+
+// UnmarshalJSON implements json.Unmarshaler with default offset types
+func (p *PropertyTableProperty) UnmarshalJSON(data []byte) error {
+	type alias PropertyTableProperty
+	tmp := alias(PropertyTableProperty{
+		ArrayOffsetType:  OffsetTypeUint32,
+		StringOffsetType: OffsetTypeUint32,
+	})
+	if err := json.Unmarshal(data, &tmp); err != nil {
+		return err
+	}
+	*p = PropertyTableProperty(tmp)
+	return nil
 }
 
 func (p PropertyTableProperty) MarshalJSON() ([]byte, error) {

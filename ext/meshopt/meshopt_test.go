@@ -400,6 +400,152 @@ func TestMeshoptEncodeInvalidParameters(t *testing.T) {
 	}
 }
 
+func TestCompressionExtension_FallbackField(t *testing.T) {
+	jsonData := []byte(`{
+		"buffer": 0,
+		"byteLength": 100,
+		"byteStride": 12,
+		"count": 25,
+		"mode": "ATTRIBUTES",
+		"fallback": 5
+	}`)
+	ext, err := Unmarshal(jsonData)
+	require.NoError(t, err)
+	ce := ext.(*CompressionExtension)
+	require.NotNil(t, ce.Fallback)
+	assert.Equal(t, uint32(5), *ce.Fallback)
+}
+
+func TestCompressionExtension_FallbackFieldOmitted(t *testing.T) {
+	jsonData := []byte(`{
+		"buffer": 0,
+		"byteLength": 100,
+		"byteStride": 12,
+		"count": 25,
+		"mode": "ATTRIBUTES"
+	}`)
+	ext, err := Unmarshal(jsonData)
+	require.NoError(t, err)
+	ce := ext.(*CompressionExtension)
+	assert.Nil(t, ce.Fallback)
+}
+
+func TestMeshoptEncodeDecode_ModeTriangles(t *testing.T) {
+	// 3 triangles = 9 uint32 indices
+	count := 9
+	stride := uint32(4)
+	indexData := make([]byte, count*int(stride))
+	for i := 0; i < count; i++ {
+		indexData[i*4] = byte(i)
+		indexData[i*4+1] = 0
+		indexData[i*4+2] = 0
+		indexData[i*4+3] = 0
+	}
+
+	compressed, ext, err := MeshoptEncode(indexData, uint32(count), stride, ModeTriangles, FilterNone)
+	require.NoError(t, err)
+	require.NotNil(t, compressed)
+	require.NotNil(t, ext)
+	assert.Equal(t, ModeTriangles, ext.Mode)
+
+	decoded, err := MeshoptDecode(ext.Count, ext.ByteStride, compressed, ext.Mode, ext.Filter)
+	require.NoError(t, err)
+	assert.Equal(t, indexData, decoded)
+}
+
+func TestMeshoptEncodeDecode_ModeIndices(t *testing.T) {
+	// meshopt C API 的 encodeIndexSequence 始终读取 uint32 输入
+	count := 6
+	stride := uint32(4)
+	indexData := make([]byte, count*int(stride))
+	for i := 0; i < count; i++ {
+		indexData[i*4] = byte(i)
+		indexData[i*4+1] = 0
+		indexData[i*4+2] = 0
+		indexData[i*4+3] = 0
+	}
+
+	compressed, ext, err := MeshoptEncode(indexData, uint32(count), stride, ModeIndices, FilterNone)
+	require.NoError(t, err)
+	require.NotNil(t, compressed)
+	require.NotNil(t, ext)
+	assert.Equal(t, ModeIndices, ext.Mode)
+
+	decoded, err := MeshoptDecode(ext.Count, ext.ByteStride, compressed, ext.Mode, ext.Filter)
+	require.NoError(t, err)
+	assert.Equal(t, indexData, decoded)
+}
+
+func TestMeshoptDecode_EmptyFilterDefault(t *testing.T) {
+	data := make([]byte, 40)
+	for i := range data {
+		data[i] = byte(i % 256)
+	}
+	compressed, ext, err := MeshoptEncode(data, 10, 4, ModeAttributes, FilterNone)
+	require.NoError(t, err)
+
+	decoded, err := MeshoptDecode(ext.Count, ext.ByteStride, compressed, ext.Mode, "")
+	require.NoError(t, err)
+	assert.Equal(t, data, decoded)
+}
+
+func TestDecodeBufferView_TargetBufferIndexOutOfRange(t *testing.T) {
+	ext := &CompressionExtension{
+		Buffer:     0,
+		ByteLength: 4,
+		ByteStride: 4,
+		Count:      1,
+		Mode:       ModeAttributes,
+	}
+	doc := &gltf.Document{
+		Buffers: []*gltf.Buffer{
+			{Data: make([]byte, 4)},
+		},
+		BufferViews: []*gltf.BufferView{
+			{
+				Buffer: 1,
+				Extensions: map[string]interface{}{
+					ExtensionName: ext,
+				},
+			},
+		},
+	}
+	err := decodeBufferView(doc, doc.BufferViews[0])
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "target buffer index out of range")
+}
+
+func TestDecodeBufferView_BufferAutoExpansion(t *testing.T) {
+	srcData := make([]byte, 40)
+	for i := range srcData {
+		srcData[i] = byte(i % 256)
+	}
+	compressed, ext, err := MeshoptEncode(srcData, 10, 4, ModeAttributes, FilterNone)
+	require.NoError(t, err)
+
+	ext.Buffer = 0
+	doc := &gltf.Document{
+		Buffers: []*gltf.Buffer{
+			{Data: compressed, ByteLength: uint32(len(compressed))},
+			{Data: make([]byte, 4), ByteLength: 4}, // 目标缓冲区比解压数据小
+		},
+		BufferViews: []*gltf.BufferView{
+			{
+				Buffer:     1,
+				ByteOffset: 0,
+				ByteLength: uint32(len(srcData)),
+				Extensions: map[string]interface{}{
+					ExtensionName: ext,
+				},
+			},
+		},
+	}
+
+	err = decodeBufferView(doc, doc.BufferViews[0])
+	require.NoError(t, err)
+	assert.Equal(t, srcData, doc.Buffers[1].Data[:len(srcData)])
+}
+
 func TestMeshoptEncodeUnsupportedModeWithFilter(t *testing.T) {
 	// 测试不支持过滤器的模式
 	data := make([]byte, 20)

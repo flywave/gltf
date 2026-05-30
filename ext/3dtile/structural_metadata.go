@@ -707,9 +707,10 @@ func (m *StructuralMetadataManager) getOrCreateExtension(doc *gltf.Document) (*e
 	}
 
 	// 创建新扩展
+	defaultSchemaID := "default_schema"
 	ext := &extgltf.ExtStructuralMetadata{
 		Schema: &Schema{
-			ID:      "default_schema",
+			ID:      &defaultSchemaID,
 			Classes: make(map[string]Class),
 		},
 	}
@@ -724,8 +725,9 @@ func (m *StructuralMetadataManager) createSchema(
 ) *Schema {
 	schema := existingSchema
 	if schema == nil {
+		defaultSchemaID := "default_schema"
 		schema = &Schema{
-			ID:      "default_schema",
+			ID:      &defaultSchemaID,
 			Classes: make(map[string]Class),
 		}
 	}

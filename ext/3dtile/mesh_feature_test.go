@@ -78,6 +78,74 @@ func TestMeshFeaturesManager_ValidateFeatureID(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestMeshFeaturesManager_AddStructuralMetadata(t *testing.T) {
+	primitive := &gltf.Primitive{Extensions: make(gltf.Extensions)}
+	manager := NewMeshFeaturesManager()
+	err := manager.AddStructuralMetadata(primitive, []uint32{0, 1}, []uint32{2, 3})
+	assert.NoError(t, err)
+	ext, err := manager.GetStructuralMetadata(primitive)
+	assert.NoError(t, err)
+	assert.NotNil(t, ext)
+	assert.Equal(t, []uint32{0, 1}, ext.GetPropertyTextures())
+	assert.Equal(t, []uint32{2, 3}, ext.GetPropertyAttributes())
+}
+
+func TestMeshFeaturesManager_GetMeshFeatures_NotFound(t *testing.T) {
+	primitive := &gltf.Primitive{}
+	manager := NewMeshFeaturesManager()
+	_, err := manager.GetMeshFeatures(primitive)
+	assert.Error(t, err)
+}
+
+func TestMeshFeaturesManager_GetStructuralMetadata_NotFound(t *testing.T) {
+	primitive := &gltf.Primitive{}
+	manager := NewMeshFeaturesManager()
+	_, err := manager.GetStructuralMetadata(primitive)
+	assert.Error(t, err)
+}
+
+func TestMeshFeaturesManager_UpdateFeatureID(t *testing.T) {
+	primitive := &gltf.Primitive{Extensions: make(gltf.Extensions)}
+	manager := NewMeshFeaturesManager()
+	orig := extmesh.FeatureID{FeatureCount: 5, Attribute: gltf.Index(0)}
+	err := manager.AddMeshFeatures(primitive, []extmesh.FeatureID{orig})
+	assert.NoError(t, err)
+
+	updated := extmesh.FeatureID{FeatureCount: 10, PropertyTable: gltf.Index(1)}
+	err = manager.UpdateFeatureID(primitive, 0, updated)
+	assert.NoError(t, err)
+
+	ext, err := manager.GetMeshFeatures(primitive)
+	assert.NoError(t, err)
+	assert.Equal(t, uint32(10), ext.FeatureIDs[0].FeatureCount)
+	assert.NotNil(t, ext.FeatureIDs[0].PropertyTable)
+}
+
+func TestMeshFeaturesManager_CreateFeatureIDTexture(t *testing.T) {
+	manager := NewMeshFeaturesManager()
+	ft := manager.CreateFeatureIDTexture(0, WithTextureChannels([]uint32{1, 2}), WithTextureCoord(3))
+	assert.Equal(t, uint32(0), ft.Index)
+	assert.Equal(t, []uint32{1, 2}, ft.Channels)
+	assert.NotNil(t, ft.TexCoord)
+	assert.Equal(t, uint32(3), *ft.TexCoord)
+}
+
+func TestMeshFeaturesManager_CreateFeatureID_AllOptions(t *testing.T) {
+	manager := NewMeshFeaturesManager()
+	fid := manager.CreateFeatureID(100,
+		WithNullFeatureID(99),
+		WithLabel("test"),
+		WithAttribute(5),
+		WithTexture(extmesh.FeatureIDTexture{Index: 1, Channels: []uint32{0}}),
+		WithPropertyTable(2),
+	)
+	assert.Equal(t, uint32(100), fid.FeatureCount)
+	assert.NotNil(t, fid.NullFeatureID)
+	assert.Equal(t, uint32(99), *fid.NullFeatureID)
+	assert.Equal(t, "test", *fid.Label)
+	assert.NotNil(t, fid.Texture)
+}
+
 func TestUnmarshalMeshFeatures(t *testing.T) {
 	// 测试有效的网格特征数据
 	validData := `{"featureIds": [{"featureCount": 10, "attribute": 0}]}`

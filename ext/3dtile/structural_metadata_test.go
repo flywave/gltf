@@ -128,3 +128,107 @@ func TestPropertyTableManager_CreatePropertyTable(t *testing.T) {
 	assert.Equal(t, "TestClass", table.Class)
 	assert.Equal(t, uint32(3), table.Count)
 }
+
+func TestStructuralMetadataManager_SaveExtension(t *testing.T) {
+	doc := &gltf.Document{Extensions: make(gltf.Extensions)}
+	manager := NewStructuralMetadataManager()
+
+	id := "my_schema"
+	ext := &extgltf.ExtStructuralMetadata{
+		Schema: &extgltf.Schema{
+			ID:      &id,
+			Classes: map[string]extgltf.Class{},
+		},
+	}
+
+	err := manager.SaveExtension(doc, ext)
+	assert.NoError(t, err)
+
+	extData, exists := doc.Extensions[extgltf.ExtensionName]
+	assert.True(t, exists)
+
+	extDataBytes, ok := extData.([]byte)
+	assert.True(t, ok)
+
+	var reloaded extgltf.ExtStructuralMetadata
+	err = json.Unmarshal(extDataBytes, &reloaded)
+	assert.NoError(t, err)
+	assert.NotNil(t, reloaded.Schema)
+	assert.Equal(t, "my_schema", *reloaded.Schema.ID)
+
+	// Now test overwriting with a new schema
+	newID := "updated_schema"
+	ext2 := &extgltf.ExtStructuralMetadata{
+		Schema: &extgltf.Schema{
+			ID: &newID,
+		},
+	}
+	err = manager.SaveExtension(doc, ext2)
+	assert.NoError(t, err)
+
+	extDataBytes2, _ := doc.Extensions[extgltf.ExtensionName].([]byte)
+	json.Unmarshal(extDataBytes2, &reloaded)
+	assert.Equal(t, "updated_schema", *reloaded.Schema.ID)
+}
+
+func TestStructuralMetadataManager_AddPropertyTable_WithStringAndBool(t *testing.T) {
+	doc := &gltf.Document{
+		Extensions: make(gltf.Extensions),
+		Buffers:    []*gltf.Buffer{{}},
+	}
+	manager := NewStructuralMetadataManager()
+	properties := []PropertyData{
+		{
+			Name:        "label",
+			ElementType: extgltf.ClassPropertyTypeString,
+			Values:      []string{"a", "b", "c"},
+		},
+		{
+			Name:        "flag",
+			ElementType: extgltf.ClassPropertyTypeBoolean,
+			Values:      []bool{true, false, true},
+		},
+	}
+	idx, err := manager.AddPropertyTable(doc, "TestClass", properties)
+	assert.NoError(t, err)
+	assert.Equal(t, 0, idx)
+}
+
+func TestStructuralMetadataManager_AddPropertyTable_MismatchedCounts(t *testing.T) {
+	doc := &gltf.Document{
+		Extensions: make(gltf.Extensions),
+		Buffers:    []*gltf.Buffer{{}},
+	}
+	manager := NewStructuralMetadataManager()
+	properties := []PropertyData{
+		{Name: "a", ElementType: extgltf.ClassPropertyTypeScalar, ComponentType: extgltf.ClassPropertyComponentTypeFloat32, Values: []float32{1, 2}},
+		{Name: "b", ElementType: extgltf.ClassPropertyTypeScalar, ComponentType: extgltf.ClassPropertyComponentTypeFloat32, Values: []float32{1, 2, 3}},
+	}
+	_, err := manager.AddPropertyTable(doc, "TestClass", properties)
+	assert.Error(t, err)
+}
+
+func TestStructuralMetadataManager_DecodeProperty_NotFound(t *testing.T) {
+	doc := &gltf.Document{Extensions: make(gltf.Extensions)}
+	manager := NewStructuralMetadataManager()
+	_, err := manager.DecodeProperty(doc, 0, "nonexistent")
+	assert.Error(t, err)
+}
+
+func TestStructuralMetadata_RackProps_InferTypes(t *testing.T) {
+	props := []map[string]interface{}{
+		{"score": float64(95), "name": "alice"},
+		{"score": float64(87), "name": "bob"},
+	}
+	racked := rackProps(props)
+	assert.Contains(t, racked, "score")
+	assert.Contains(t, racked, "name")
+
+	scores, ok := racked["score"].([]float64)
+	assert.True(t, ok)
+	assert.Equal(t, []float64{95, 87}, scores)
+
+	names, ok := racked["name"].([]string)
+	assert.True(t, ok)
+	assert.Equal(t, []string{"alice", "bob"}, names)
+}

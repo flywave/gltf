@@ -1,61 +1,47 @@
 package draco
 
 import (
-	"math"
 	"testing"
 
 	"github.com/flywave/gltf"
+	"github.com/flywave/gltf/modeler"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// TestDracoIntegration 测试Draco压缩和解压缩的完整集成流程
 func TestDracoIntegration(t *testing.T) {
-	// 1. 加载一个包含Draco压缩的GLTF模型
 	doc, err := gltf.Open("../../testdata/Draco/draco.gltf")
-	require.NoError(t, err, "无法打开测试GLTF文件")
-	require.NotNil(t, doc, "文档不应为nil")
+	require.NoError(t, err)
+	require.NotNil(t, doc)
 
-	// 2. 验证初始状态 - 应该包含Draco扩展
 	originalPrimitive := doc.Meshes[0].Primitives[0]
 	_, hasDracoExt := originalPrimitive.Extensions[ExtensionName]
-	assert.True(t, hasDracoExt, "初始模型应包含Draco扩展")
-	assert.Contains(t, doc.ExtensionsUsed, ExtensionName, "ExtensionsUsed应包含Draco扩展")
+	assert.True(t, hasDracoExt)
+	assert.Contains(t, doc.ExtensionsUsed, ExtensionName)
 
-	// 3. 记录解压前的访问器状态
 	originalPositionAccessor := doc.Accessors[originalPrimitive.Attributes["POSITION"]]
 	originalIndexAccessor := doc.Accessors[*originalPrimitive.Indices]
 
-	// 解压前，这些访问器应该没有BufferView（因为数据在Draco压缩中）
-	assert.Nil(t, originalPositionAccessor.BufferView, "解压前POSITION访问器不应有BufferView")
-	assert.Nil(t, originalIndexAccessor.BufferView, "解压前索引访问器不应有BufferView")
+	assert.Nil(t, originalPositionAccessor.BufferView)
+	assert.Nil(t, originalIndexAccessor.BufferView)
 
-	// 4. 执行解压缩
 	err = DecodeAll(doc)
-	require.NoError(t, err, "解压缩应成功")
+	require.NoError(t, err)
 
-	// 5. 验证解压后的状态
 	decodedPrimitive := doc.Meshes[0].Primitives[0]
 	_, hasDracoExt = decodedPrimitive.Extensions[ExtensionName]
-	assert.False(t, hasDracoExt, "解压后应移除Draco扩展")
-	assert.NotContains(t, doc.ExtensionsUsed, ExtensionName, "ExtensionsUsed应移除Draco扩展")
+	assert.False(t, hasDracoExt)
+	assert.NotContains(t, doc.ExtensionsUsed, ExtensionName)
 
-	// 6. 验证解压后的访问器状态
 	decodedPositionAccessor := doc.Accessors[decodedPrimitive.Attributes["POSITION"]]
 	decodedIndexAccessor := doc.Accessors[*decodedPrimitive.Indices]
 
-	// 解压后，这些访问器应该有BufferView（因为数据已解压到缓冲区）
-	assert.NotNil(t, decodedPositionAccessor.BufferView, "解压后POSITION访问器应有BufferView")
-	assert.NotNil(t, decodedIndexAccessor.BufferView, "解压后索引访问器应有BufferView")
+	assert.NotNil(t, decodedPositionAccessor.BufferView)
+	assert.NotNil(t, decodedIndexAccessor.BufferView)
 
-	// 验证数据计数
-	assert.Equal(t, uint32(5025), decodedPositionAccessor.Count, "POSITION访问器计数应正确")
-	assert.Equal(t, uint32(28800), decodedIndexAccessor.Count, "索引访问器计数应正确")
+	assert.Equal(t, uint32(5025), decodedPositionAccessor.Count)
+	assert.Equal(t, uint32(28800), decodedIndexAccessor.Count)
 
-	// 7. 保存解压后的文档（模拟用户可能做的修改）
-	// 这里我们直接进行重新压缩，但在实际应用中用户可能在这里修改数据
-
-	// 8. 执行重新压缩
 	options := map[string]interface{}{
 		"quantization": map[string]int{
 			"position": 14,
@@ -64,172 +50,296 @@ func TestDracoIntegration(t *testing.T) {
 		},
 	}
 	err = EncodeAll(doc, options)
-	require.NoError(t, err, "重新压缩应成功")
+	require.NoError(t, err)
 
-	// 9. 验证重新压缩后的状态
 	encodedPrimitive := doc.Meshes[0].Primitives[0]
 	_, hasDracoExt = encodedPrimitive.Extensions[ExtensionName]
-	assert.True(t, hasDracoExt, "重新压缩后应包含Draco扩展")
-	assert.Contains(t, doc.ExtensionsUsed, ExtensionName, "ExtensionsUsed应包含Draco扩展")
+	assert.True(t, hasDracoExt)
+	assert.Contains(t, doc.ExtensionsUsed, ExtensionName)
 
-	// 10. 验证压缩后的访问器状态
 	encodedPositionAccessor := doc.Accessors[encodedPrimitive.Attributes["POSITION"]]
 	encodedIndexAccessor := doc.Accessors[*encodedPrimitive.Indices]
 
-	// 压缩后，这些访问器应该没有BufferView（因为数据在Draco压缩中）
-	assert.Nil(t, encodedPositionAccessor.BufferView, "压缩后POSITION访问器不应有BufferView")
-	assert.Nil(t, encodedIndexAccessor.BufferView, "压缩后索引访问器不应有BufferView")
+	assert.Nil(t, encodedPositionAccessor.BufferView)
+	assert.Nil(t, encodedIndexAccessor.BufferView)
 
-	// 11. 验证Draco扩展数据
 	dracoExt, ok := encodedPrimitive.Extensions[ExtensionName].(*DracoExtension)
-	require.True(t, ok, "Draco扩展应为正确类型")
-	assert.NotNil(t, dracoExt.BufferView, "Draco扩展应有BufferView")
-	assert.NotEmpty(t, dracoExt.Attributes, "Draco扩展应有属性映射")
+	require.True(t, ok)
+	assert.NotNil(t, dracoExt.BufferView)
+	assert.NotEmpty(t, dracoExt.Attributes)
 
-	// 12. 最后再次解压以验证循环一致性
 	err = DecodeAll(doc)
-	require.NoError(t, err, "再次解压应成功")
+	require.NoError(t, err)
 
-	// 13. 验证最终状态与第一次解压后一致
 	finalPrimitive := doc.Meshes[0].Primitives[0]
 	finalPositionAccessor := doc.Accessors[finalPrimitive.Attributes["POSITION"]]
 	finalIndexAccessor := doc.Accessors[*finalPrimitive.Indices]
 
-	assert.NotNil(t, finalPositionAccessor.BufferView, "最终POSITION访问器应有BufferView")
-	assert.NotNil(t, finalIndexAccessor.BufferView, "最终索引访问器应有BufferView")
-	assert.Equal(t, decodedPositionAccessor.Count, finalPositionAccessor.Count, "POSITION访问器计数应一致")
-	assert.Equal(t, decodedIndexAccessor.Count, finalIndexAccessor.Count, "索引访问器计数应一致")
+	assert.NotNil(t, finalPositionAccessor.BufferView)
+	assert.NotNil(t, finalIndexAccessor.BufferView)
+	assert.Equal(t, decodedPositionAccessor.Count, finalPositionAccessor.Count)
+	assert.Equal(t, decodedIndexAccessor.Count, finalIndexAccessor.Count)
 }
 
-// TestDracoEncodeDecodeCycle 测试编码-解码循环
 func TestDracoEncodeDecodeCycle(t *testing.T) {
-	// 1. 创建一个简单的测试文档
-	doc := &gltf.Document{
-		Asset: gltf.Asset{
-			Version:   "2.0",
-			Generator: "Draco Integration Test",
-		},
-		Buffers: []*gltf.Buffer{
-			{
-				ByteLength: 0,
-				Data:       []byte{},
-			},
-		},
-		BufferViews: []*gltf.BufferView{},
-		Accessors:   []*gltf.Accessor{},
-		Meshes: []*gltf.Mesh{
-			{
-				Name: "TestMesh",
-				Primitives: []*gltf.Primitive{
-					{
-						Attributes: map[string]uint32{},
-						Indices:    nil,
-						Material:   nil,
-					},
-				},
-			},
-		},
-	}
+	doc, origPosAcc, origIdxAcc := buildTriangleDoc(t)
 
-	// 2. 添加测试数据 - 简单的三角形
-	// 位置数据 (3个顶点，每个顶点3个分量)
-	positionData := []float32{
-		0.0, 0.0, 0.0, // 顶点0
-		1.0, 0.0, 0.0, // 顶点1
-		0.0, 1.0, 0.0, // 顶点2
-	}
-
-	// 索引数据 (1个三角形)
-	indexData := []uint16{0, 1, 2}
-
-	// 3. 创建缓冲区和视图
-	// 位置缓冲区
-	posBuffer := make([]byte, len(positionData)*4) // float32占4字节
-	for i, v := range positionData {
-		bits := math.Float32bits(v)
-		posBuffer[i*4] = byte(bits)
-		posBuffer[i*4+1] = byte(bits >> 8)
-		posBuffer[i*4+2] = byte(bits >> 16)
-		posBuffer[i*4+3] = byte(bits >> 24)
-	}
-
-	// 索引缓冲区
-	idxBuffer := make([]byte, len(indexData)*2) // uint16占2字节
-	for i, v := range indexData {
-		idxBuffer[i*2] = byte(v)
-		idxBuffer[i*2+1] = byte(v >> 8)
-	}
-
-	// 4. 添加缓冲区数据到文档
-	doc.Buffers[0].Data = append(doc.Buffers[0].Data, posBuffer...)
-	doc.Buffers[0].Data = append(doc.Buffers[0].Data, idxBuffer...)
-	doc.Buffers[0].ByteLength = uint32(len(doc.Buffers[0].Data))
-
-	// 5. 创建缓冲区视图
-	posView := &gltf.BufferView{
-		Buffer:     0,
-		ByteOffset: 0,
-		ByteLength: uint32(len(posBuffer)),
-		Target:     gltf.TargetArrayBuffer,
-	}
-	doc.BufferViews = append(doc.BufferViews, posView)
-
-	idxView := &gltf.BufferView{
-		Buffer:     0,
-		ByteOffset: uint32(len(posBuffer)),
-		ByteLength: uint32(len(idxBuffer)),
-		Target:     gltf.TargetElementArrayBuffer,
-	}
-	doc.BufferViews = append(doc.BufferViews, idxView)
-
-	// 6. 创建访问器
-	posAccessor := &gltf.Accessor{
-		BufferView:    gltf.Index(0),
-		ByteOffset:    0,
-		ComponentType: gltf.ComponentFloat,
-		Count:         3,
-		Type:          gltf.AccessorVec3,
-		Max:           []float32{1.0, 1.0, 0.0},
-		Min:           []float32{0.0, 0.0, 0.0},
-	}
-	doc.Accessors = append(doc.Accessors, posAccessor)
-
-	idxAccessor := &gltf.Accessor{
-		BufferView:    gltf.Index(1),
-		ByteOffset:    0,
-		ComponentType: gltf.ComponentUshort,
-		Count:         3,
-		Type:          gltf.AccessorScalar,
-	}
-	doc.Accessors = append(doc.Accessors, idxAccessor)
-
-	// 7. 关联访问器到图元
-	primitive := doc.Meshes[0].Primitives[0]
-	primitive.Attributes["POSITION"] = 0
-	primitive.Indices = gltf.Index(1)
-
-	// 8. 执行编码
 	err := EncodeAll(doc, nil)
-	assert.NoError(t, err, "编码应成功")
+	require.NoError(t, err)
 
-	// 9. 验证编码结果
 	encodedPrimitive := doc.Meshes[0].Primitives[0]
 	_, hasDracoExt := encodedPrimitive.Extensions[ExtensionName]
-	assert.True(t, hasDracoExt, "编码后应包含Draco扩展")
+	assert.True(t, hasDracoExt)
 
-	// 10. 执行解码
 	err = DecodeAll(doc)
-	assert.NoError(t, err, "解码应成功")
+	require.NoError(t, err)
 
-	// 11. 验证解码结果
 	decodedPrimitive := doc.Meshes[0].Primitives[0]
 	_, hasDracoExt = decodedPrimitive.Extensions[ExtensionName]
-	assert.False(t, hasDracoExt, "解码后应移除Draco扩展")
+	assert.False(t, hasDracoExt)
 
-	// 12. 验证数据完整性
 	finalPosAccessor := doc.Accessors[decodedPrimitive.Attributes["POSITION"]]
 	finalIdxAccessor := doc.Accessors[*decodedPrimitive.Indices]
 
-	assert.Equal(t, uint32(3), finalPosAccessor.Count, "POSITION访问器计数应正确")
-	assert.Equal(t, uint32(3), finalIdxAccessor.Count, "索引访问器计数应正确")
+	assert.Equal(t, origPosAcc.Count, finalPosAccessor.Count)
+	assert.Equal(t, origIdxAcc.Count, finalIdxAccessor.Count)
+}
+
+func TestDracoEncodeDecode_QuadSharedVertices(t *testing.T) {
+	doc, origPosAcc, origIdxAcc := buildQuadDoc(t)
+
+	err := EncodeAll(doc, nil)
+	require.NoError(t, err)
+	err = DecodeAll(doc)
+	require.NoError(t, err)
+
+	p := doc.Meshes[0].Primitives[0]
+	finalPosAcc := doc.Accessors[p.Attributes["POSITION"]]
+	finalIdxAcc := doc.Accessors[*p.Indices]
+
+	assert.Equal(t, origPosAcc.Count, finalPosAcc.Count, "quad vertex count")
+	assert.Equal(t, origIdxAcc.Count, finalIdxAcc.Count, "quad index count")
+}
+
+func TestDracoEncodeDecode_MultiAttribute(t *testing.T) {
+	doc, origPosAcc, origNrmAcc, origTexAcc, origIdxAcc := buildMultiAttrTriangleDoc(t)
+
+	err := EncodeAll(doc, nil)
+	require.NoError(t, err)
+	err = DecodeAll(doc)
+	require.NoError(t, err)
+
+	p := doc.Meshes[0].Primitives[0]
+
+	finalPosAcc := doc.Accessors[p.Attributes["POSITION"]]
+	finalNrmAcc := doc.Accessors[p.Attributes["NORMAL"]]
+	finalTexAcc := doc.Accessors[p.Attributes["TEXCOORD_0"]]
+	finalIdxAcc := doc.Accessors[*p.Indices]
+
+	assert.Equal(t, origPosAcc.Count, finalPosAcc.Count, "POSITION count")
+	assert.Equal(t, origNrmAcc.Count, finalNrmAcc.Count, "NORMAL count")
+	assert.Equal(t, origTexAcc.Count, finalTexAcc.Count, "TEXCOORD_0 count")
+	assert.Equal(t, origIdxAcc.Count, finalIdxAcc.Count, "INDEX count")
+}
+
+func TestDracoDataIntegrity(t *testing.T) {
+	expectedPositions := [][3]float32{
+		{0.0, 0.0, 0.0},
+		{1.0, 0.0, 0.0},
+		{0.0, 1.0, 0.0},
+	}
+
+	doc := buildDocWithPositions(t, expectedPositions)
+
+	err := EncodeAll(doc, nil)
+	require.NoError(t, err)
+	err = DecodeAll(doc)
+	require.NoError(t, err)
+
+	finalPosAcc := doc.Accessors[doc.Meshes[0].Primitives[0].Attributes["POSITION"]]
+	assert.Equal(t, uint32(len(expectedPositions)), finalPosAcc.Count)
+
+	readPositions, err := modeler.ReadPosition(doc, finalPosAcc, nil)
+	require.NoError(t, err)
+
+	for i := range expectedPositions {
+		assert.InDelta(t, expectedPositions[i][0], readPositions[i][0], 1e-4,
+			"vertex %d X mismatch", i)
+		assert.InDelta(t, expectedPositions[i][1], readPositions[i][1], 1e-4,
+			"vertex %d Y mismatch", i)
+		assert.InDelta(t, expectedPositions[i][2], readPositions[i][2], 1e-4,
+			"vertex %d Z mismatch", i)
+	}
+}
+
+func TestDracoDataIntegrity_QuadWithAllAttributes(t *testing.T) {
+	// 使用不对称顶点确保Draco重排后可以唯一识别
+	positions := [][3]float32{
+		{0, 0, 0},
+		{2, 0, 0},
+		{2, 1, 0},
+		{0, 1, 0},
+	}
+	normals := [][3]float32{
+		{0, 0, 1},
+		{0, 0, 1},
+		{0, 0, 1},
+		{0, 0, 1},
+	}
+	texcoords := [][2]float32{
+		{0, 0},
+		{2, 0},
+		{2, 2},
+		{0, 2},
+	}
+	indices := []uint16{0, 1, 2, 0, 2, 3}
+
+	doc := gltf.NewDocument()
+	posAcc := modeler.WritePosition(doc, positions)
+	nrmAcc := modeler.WriteNormal(doc, normals)
+	texAcc := modeler.WriteTextureCoord(doc, texcoords)
+	idxAcc := modeler.WriteIndices(doc, indices)
+
+	mesh := &gltf.Mesh{Name: "Quad",
+		Primitives: []*gltf.Primitive{{
+			Attributes: map[string]uint32{
+				gltf.POSITION:   posAcc,
+				gltf.NORMAL:     nrmAcc,
+				gltf.TEXCOORD_0: texAcc,
+			},
+			Indices: gltf.Index(idxAcc),
+		}},
+	}
+	doc.Meshes = append(doc.Meshes, mesh)
+
+	err := EncodeAll(doc, nil)
+	require.NoError(t, err)
+
+	err = DecodeAll(doc)
+	require.NoError(t, err)
+
+	p := doc.Meshes[0].Primitives[0]
+
+	finalPosAcc := doc.Accessors[p.Attributes["POSITION"]]
+	finalNrmAcc := doc.Accessors[p.Attributes["NORMAL"]]
+	finalTexAcc := doc.Accessors[p.Attributes["TEXCOORD_0"]]
+	finalIdxAcc := doc.Accessors[*p.Indices]
+
+	assert.Equal(t, uint32(4), finalPosAcc.Count, "vertex count should be 4")
+	assert.Equal(t, uint32(4), finalNrmAcc.Count, "normal count should be 4")
+	assert.Equal(t, uint32(4), finalTexAcc.Count, "texcoord count should be 4")
+	assert.Equal(t, uint32(6), finalIdxAcc.Count, "index count should be 6")
+
+	// 读取位置数据 (Draco 可能重排顶点, 按位置值排序后比较)
+	readPos, err := modeler.ReadPosition(doc, finalPosAcc, nil)
+	require.NoError(t, err)
+	assert.Equal(t, len(positions), len(readPos))
+
+	// 构建原始顶点位置集合并验证每个原始顶点都能在解码结果中找到
+	findInDelta := func(target [3]float32, list [][3]float32, eps float32) bool {
+		for _, p := range list {
+			d := float32(0)
+			for j := 0; j < 3; j++ {
+				diff := p[j] - target[j]
+				if diff < 0 {
+					diff = -diff
+				}
+				d += diff
+			}
+			if d < eps {
+				return true
+			}
+		}
+		return false
+	}
+
+	for i, pos := range positions {
+		assert.True(t, findInDelta(pos, readPos, 1e-3),
+			"original vertex %d %v not found in decoded positions", i, pos)
+	}
+
+	// 验证索引计数
+	assert.Equal(t, uint32(6), finalIdxAcc.Count, "index count")
+}
+
+// --- 辅助函数 ---
+
+func buildTriangleDoc(t *testing.T) (*gltf.Document, *gltf.Accessor, *gltf.Accessor) {
+	t.Helper()
+	positions := [][3]float32{{0, 0, 0}, {1, 0, 0}, {0, 1, 0}}
+	indices := []uint16{0, 1, 2}
+	doc := gltf.NewDocument()
+	posAcc := modeler.WritePosition(doc, positions)
+	idxAcc := modeler.WriteIndices(doc, indices)
+	mesh := &gltf.Mesh{Name: "Triangle",
+		Primitives: []*gltf.Primitive{{
+			Attributes: map[string]uint32{gltf.POSITION: posAcc},
+			Indices:    gltf.Index(idxAcc),
+		}},
+	}
+	doc.Meshes = append(doc.Meshes, mesh)
+	return doc, doc.Accessors[posAcc], doc.Accessors[idxAcc]
+}
+
+func buildQuadDoc(t *testing.T) (*gltf.Document, *gltf.Accessor, *gltf.Accessor) {
+	t.Helper()
+	positions := [][3]float32{{-0.5, -0.5, 0}, {0.5, -0.5, 0}, {0.5, 0.5, 0}, {-0.5, 0.5, 0}}
+	indices := []uint16{0, 1, 2, 0, 2, 3}
+	doc := gltf.NewDocument()
+	posAcc := modeler.WritePosition(doc, positions)
+	idxAcc := modeler.WriteIndices(doc, indices)
+	mesh := &gltf.Mesh{Name: "Quad",
+		Primitives: []*gltf.Primitive{{
+			Attributes: map[string]uint32{gltf.POSITION: posAcc},
+			Indices:    gltf.Index(idxAcc),
+		}},
+	}
+	doc.Meshes = append(doc.Meshes, mesh)
+	return doc, doc.Accessors[posAcc], doc.Accessors[idxAcc]
+}
+
+func buildMultiAttrTriangleDoc(t *testing.T) (*gltf.Document, *gltf.Accessor, *gltf.Accessor, *gltf.Accessor, *gltf.Accessor) {
+	t.Helper()
+	positions := [][3]float32{{0, 0, 0}, {1, 0, 0}, {0, 1, 0}}
+	normals := [][3]float32{{0, 0, 1}, {0, 0, 1}, {0, 0, 1}}
+	texcoords := [][2]float32{{0, 0}, {1, 0}, {0, 1}}
+	indices := []uint16{0, 1, 2}
+
+	doc := gltf.NewDocument()
+	posAcc := modeler.WritePosition(doc, positions)
+	nrmAcc := modeler.WriteNormal(doc, normals)
+	texAcc := modeler.WriteTextureCoord(doc, texcoords)
+	idxAcc := modeler.WriteIndices(doc, indices)
+
+	mesh := &gltf.Mesh{Name: "Triangle",
+		Primitives: []*gltf.Primitive{{
+			Attributes: map[string]uint32{
+				gltf.POSITION:   posAcc,
+				gltf.NORMAL:     nrmAcc,
+				gltf.TEXCOORD_0: texAcc,
+			},
+			Indices: gltf.Index(idxAcc),
+		}},
+	}
+	doc.Meshes = append(doc.Meshes, mesh)
+	return doc, doc.Accessors[posAcc], doc.Accessors[nrmAcc], doc.Accessors[texAcc], doc.Accessors[idxAcc]
+}
+
+func buildDocWithPositions(t *testing.T, positions [][3]float32) *gltf.Document {
+	t.Helper()
+	indices := make([]uint16, len(positions))
+	for i := range indices {
+		indices[i] = uint16(i)
+	}
+	doc := gltf.NewDocument()
+	posAcc := modeler.WritePosition(doc, positions)
+	idxAcc := modeler.WriteIndices(doc, indices)
+	mesh := &gltf.Mesh{Name: "Points",
+		Primitives: []*gltf.Primitive{{
+			Attributes: map[string]uint32{gltf.POSITION: posAcc},
+			Indices:    gltf.Index(idxAcc),
+		}},
+	}
+	doc.Meshes = append(doc.Meshes, mesh)
+	return doc
 }

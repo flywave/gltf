@@ -136,19 +136,29 @@ func TestProcessByteComponents(t *testing.T) {
 }
 
 func TestProcessShortComponents(t *testing.T) {
-	// 创建测试数据
+	// 创建测试数据 (stride=4, compCount=1, 所以每个元素间隔4字节, 含2字节padding)
 	buffer := make([]byte, 16)
 	for i := 0; i < 8; i++ {
 		buffer[i*2] = byte(i * 10)
 		buffer[i*2+1] = byte(i * 10 >> 8)
 	}
 
+	// stride=4 > compCount*2=2, 非连续, 逐元素路径应读取位置0,4,8,12的值
 	out := make([]float32, 4)
 	processShortComponents(buffer, 0, 4, gltf.ComponentUshort, true, 1, 4, out)
 
-	// 验证结果
+	// stride=4 时读取 buffer[0:2]=0, buffer[4:6]=20, buffer[8:10]=40, buffer[12:14]=60
+	expectedValues := []float32{0, 20, 40, 60}
+	for i := 0; i < 4; i++ {
+		expected := expectedValues[i] / 65535.0
+		assert.InDelta(t, expected, out[i], 1e-6, "短整型组件处理结果应匹配 (stride=4)")
+	}
+
+	// 测试连续数据路径 (stride=compCount*2)
+	out2 := make([]float32, 4)
+	processShortComponents(buffer, 0, 2, gltf.ComponentUshort, true, 1, 4, out2)
 	for i := 0; i < 4; i++ {
 		expected := float32(i*10) / 65535.0
-		assert.InDelta(t, expected, out[i], 1e-6, "短整型组件处理结果应匹配")
+		assert.InDelta(t, expected, out2[i], 1e-6, "短整型组件处理结果应匹配 (contiguous)")
 	}
 }

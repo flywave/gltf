@@ -15,7 +15,25 @@ func init() {
 
 // ExtMeshFeatures represents the EXT_mesh_features glTF Mesh Primitive extension
 type ExtMeshFeatures struct {
-	FeatureIDs []FeatureID                `json:"featureIds"`
+	FeatureIDs      []FeatureID                `json:"featureIds"`
+	FeatureTextures []FeatureTexture           `json:"featureTextures,omitempty"`
+	Extensions      map[string]json.RawMessage `json:"extensions,omitempty"`
+	Extras          json.RawMessage            `json:"extras,omitempty"`
+}
+
+// FeatureTexture defines a feature texture
+type FeatureTexture struct {
+	Class      string                              `json:"class"`
+	Properties map[string]FeatureTextureProperty   `json:"properties"`
+	Extensions map[string]json.RawMessage          `json:"extensions,omitempty"`
+	Extras     json.RawMessage                     `json:"extras,omitempty"`
+}
+
+// FeatureTextureProperty defines a property within a feature texture
+type FeatureTextureProperty struct {
+	Channels   []uint32                   `json:"channels"`
+	Index      uint32                     `json:"index"`
+	TexCoord   *uint32                    `json:"texCoord,omitempty"`
 	Extensions map[string]json.RawMessage `json:"extensions,omitempty"`
 	Extras     json.RawMessage            `json:"extras,omitempty"`
 }
@@ -34,9 +52,9 @@ type FeatureID struct {
 
 // FeatureIDTexture represents a texture containing feature IDs
 type FeatureIDTexture struct {
-	Channels   []uint32                   `json:"channels,omitempty"`
+	Channels   []uint32                   `json:"channels"`
 	Index      uint32                     `json:"index"`
-	TexCoord   uint32                     `json:"texCoord,omitempty"`
+	TexCoord   *uint32                    `json:"texCoord,omitempty"`
 	Extensions map[string]json.RawMessage `json:"extensions,omitempty"`
 	Extras     json.RawMessage            `json:"extras,omitempty"`
 }

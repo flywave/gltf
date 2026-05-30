@@ -466,18 +466,30 @@ func encodePrimitive(doc *gltf.Document, encoder *draco.Encoder, primitive *gltf
 		return fmt.Errorf("无效的顶点数量: %d", vertexCount)
 	}
 
-	// 创建Draco网格
+	// 创建Draco网格 (TriangleSoupMeshBuilder 需要按面提供数据, 每面3个顶点)
+	totalCorners := faceCount * 3
 	builder := draco.NewMeshBuilder()
 	builder.Start(faceCount)
 
-	// 添加位置属性
-	posData := make([]vec3.T, vertexCount)
-	for i := 0; i < vertexCount; i++ {
-		posData[i] = vec3.T{
-			positionData[i*3],
-			positionData[i*3+1],
-			positionData[i*3+2],
+	// 按面展开顶点属性: 将共享顶点数据展开为每个面片独立的数据
+	expandPerFace := func(components int, data []float32) []float32 {
+		out := make([]float32, totalCorners*components)
+		for f := 0; f < faceCount; f++ {
+			for c := 0; c < 3; c++ {
+				vertIdx := int(indices[f*3+c])
+				for j := 0; j < components; j++ {
+					out[(f*3+c)*components+j] = data[vertIdx*components+j]
+				}
+			}
 		}
+		return out
+	}
+
+	// 添加位置属性 (按面展开)
+	posExpanded := expandPerFace(3, positionData)
+	posData := make([]vec3.T, totalCorners)
+	for i := 0; i < totalCorners; i++ {
+		posData[i] = vec3.T{posExpanded[i*3], posExpanded[i*3+1], posExpanded[i*3+2]}
 	}
 	posIndex := builder.SetAttribute(faceCount, posData, draco.GAT_POSITION)
 
@@ -507,28 +519,31 @@ func encodePrimitive(doc *gltf.Document, encoder *draco.Encoder, primitive *gltf
 
 		switch components {
 		case 2:
-			vec2Data := make([]vec2.T, vertexCount/2)
-			for i := 0; i < vertexCount/2; i++ {
-				vec2Data[i] = vec2.T{data[i*2], data[i*2+1]}
+			expanded := expandPerFace(2, data)
+			vec2Data := make([]vec2.T, totalCorners)
+			for i := 0; i < totalCorners; i++ {
+				vec2Data[i] = vec2.T{expanded[i*2], expanded[i*2+1]}
 			}
 			attrMap[name] = builder.SetAttribute(faceCount, vec2Data, attrType)
 		case 3:
-			vec3Data := make([]vec3.T, vertexCount/3)
-			for i := 0; i < vertexCount/3; i++ {
-				vec3Data[i] = vec3.T{data[i*3], data[i*3+1], data[i*3+2]}
+			expanded := expandPerFace(3, data)
+			vec3Data := make([]vec3.T, totalCorners)
+			for i := 0; i < totalCorners; i++ {
+				vec3Data[i] = vec3.T{expanded[i*3], expanded[i*3+1], expanded[i*3+2]}
 			}
 			attrMap[name] = builder.SetAttribute(faceCount, vec3Data, attrType)
 		case 4:
-			vec4Data := make([]vec4.T, vertexCount/4)
-			for i := 0; i < vertexCount/4; i++ {
-				vec4Data[i] = vec4.T{data[i*4], data[i*4+1], data[i*4+2], data[i*4+3]}
+			expanded := expandPerFace(4, data)
+			vec4Data := make([]vec4.T, totalCorners)
+			for i := 0; i < totalCorners; i++ {
+				vec4Data[i] = vec4.T{expanded[i*4], expanded[i*4+1], expanded[i*4+2], expanded[i*4+3]}
 			}
 			attrMap[name] = builder.SetAttribute(faceCount, vec4Data, attrType)
 		case 1:
 			if componentType == gltf.ComponentUshort {
-				shortData := make([]uint16, vertexCount)
-				for i := 0; i < vertexCount; i++ {
-					shortData[i] = uint16(data[i])
+				shortData := make([]uint16, totalCorners)
+				for i := 0; i < totalCorners; i++ {
+					shortData[i] = uint16(data[int(indices[i])])
 				}
 				attrMap[name] = builder.SetAttribute(faceCount, shortData, attrType)
 			}

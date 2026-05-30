@@ -14,6 +14,21 @@ import (
 const (
 	ExtensionName = "KHR_gaussian_splatting"
 	SH0           = 0.28209479177387814
+
+	// KHR_gaussian_splatting 定义的属性名
+	PositionAttr = "POSITION"
+	ColorAttr    = "COLOR_0"
+	ScaleAttr    = "_SCALE"
+	RotationAttr = "_ROTATION"
+	SH0Attr      = "_SH_0"
+	SH1Attr      = "_SH_1"
+	SH2Attr      = "_SH_2"
+	SH3Attr      = "_SH_3"
+	SH4Attr      = "_SH_4"
+	SH5Attr      = "_SH_5"
+	SH6Attr      = "_SH_6"
+	SH7Attr      = "_SH_7"
+	SH8Attr      = "_SH_8"
 )
 
 func init() {
@@ -551,17 +566,9 @@ func ReadGaussianSplatting(doc *gltf.Document, primitive *gltf.Primitive) (*Vert
 
 	// 读取颜色
 	if colorAccIdx, ok := primitive.Attributes["COLOR_0"]; ok {
-		colorAccessor := doc.Accessors[colorAccIdx]
-
 		vertexData.Colors, err = readAccessorAsFloat32(doc, int(colorAccIdx))
 		if err != nil {
 			return nil, fmt.Errorf("读取颜色数据失败: %w", err)
-		}
-		if colorAccessor.ComponentType == gltf.ComponentUbyte {
-			for i := 0; i < len(vertexData.Colors); i++ {
-				v := vertexData.Colors[i]
-				vertexData.Colors[i] = v * 255
-			}
 		}
 	} else {
 		return nil, fmt.Errorf("missing COLOR_0 attribute")
@@ -713,8 +720,19 @@ func batchReadComponents(
 	// 根据组件类型选择处理方式
 	switch compType {
 	case gltf.ComponentFloat:
-		if err := binary.Read(bytes.NewReader(buffer[startOffset:]), binary.LittleEndian, out); err != nil {
-			return fmt.Errorf("浮点数据读取失败: %w", err)
+		if stride == uint32(componentCount*4) && count > 0 {
+			if err := binary.Read(bytes.NewReader(buffer[startOffset:]), binary.LittleEndian, out); err != nil {
+				return fmt.Errorf("浮点数据读取失败: %w", err)
+			}
+		} else {
+			for i := uint32(0); i < count; i++ {
+				offset := startOffset + i*stride
+				for c := 0; c < componentCount; c++ {
+					idx := i*uint32(componentCount) + uint32(c)
+					raw := binary.LittleEndian.Uint32(buffer[offset+uint32(c*4):])
+					out[idx] = math.Float32frombits(raw)
+				}
+			}
 		}
 
 	case gltf.ComponentUbyte, gltf.ComponentByte:
@@ -735,7 +753,7 @@ func batchReadComponents(
 	return nil
 }
 
-// 处理字节类型组件 (优化内存访问模式)
+// 处理字节类型组件
 func processByteComponents(buffer []byte, start uint32, stride uint32, compType gltf.ComponentType, normalized bool, compCount int, count uint32, out []float32) {
 	divisor := float32(1.0)
 	if normalized {
@@ -745,7 +763,6 @@ func processByteComponents(buffer []byte, start uint32, stride uint32, compType 
 		}
 	}
 
-	// 修复：正确计算偏移量
 	for i := uint32(0); i < count; i++ {
 		offset := start + i*stride
 		for c := 0; c < compCount; c++ {
@@ -786,41 +803,45 @@ func processShortComponents(buffer []byte, start uint32, stride uint32, compType
 	}
 
 	// 根据类型选择读取方式
+	// 注意: 只有当数据连续(无stride间隔)时才使用批量读取, 否则用逐元素读取
+	contiguous := stride == uint32(compCount*2)
+
 	if compType == gltf.ComponentUshort && readAsUnsigned {
-		// 处理 uint16
-		uints := make([]uint16, count*uint32(compCount))
-		if err := binary.Read(bytes.NewReader(buffer[start:]), binary.LittleEndian, uints); err == nil {
-			for i, v := range uints {
-				out[i] = float32(v) / divisor // v 是 uint16, 转换为 float32
+		if contiguous {
+			uints := make([]uint16, count*uint32(compCount))
+			if err := binary.Read(bytes.NewReader(buffer[start:]), binary.LittleEndian, uints); err == nil {
+				for i, v := range uints {
+					out[i] = float32(v) / divisor
+				}
+				return
 			}
 		}
-		// 回退逐元素处理 (处理 uint16)
 		for i := uint32(0); i < count; i++ {
 			offset := start + i*stride
 			for c := 0; c < compCount; c++ {
 				idx := i*uint32(compCount) + uint32(c)
 				byteOffset := offset + uint32(c*2)
-				val := binary.LittleEndian.Uint16(buffer[byteOffset:]) // 直接读取 uint16
-				out[idx] = float32(val) / divisor                      // 转换为 float32 并除以 divisor
+				val := binary.LittleEndian.Uint16(buffer[byteOffset:])
+				out[idx] = float32(val) / divisor
 			}
 		}
 	} else {
-		// 处理 int16 (ComponentShort 或 normalized=true 的 ComponentUshort)
-		ints := make([]int16, count*uint32(compCount))
-		if err := binary.Read(bytes.NewReader(buffer[start:]), binary.LittleEndian, ints); err == nil {
-			for i, v := range ints {
-				out[i] = float32(v) / divisor // v 是 int16, 转换为 float32
+		if contiguous {
+			ints := make([]int16, count*uint32(compCount))
+			if err := binary.Read(bytes.NewReader(buffer[start:]), binary.LittleEndian, ints); err == nil {
+				for i, v := range ints {
+					out[i] = float32(v) / divisor
+				}
+				return
 			}
-			return
 		}
-		// 回退逐元素处理 (处理 int16)
 		for i := uint32(0); i < count; i++ {
 			offset := start + i*stride
 			for c := 0; c < compCount; c++ {
 				idx := i*uint32(compCount) + uint32(c)
 				byteOffset := offset + uint32(c*2)
-				val := int16(binary.LittleEndian.Uint16(buffer[byteOffset:])) // 读取为 uint16 再转 int16
-				out[idx] = float32(val) / divisor                             // 转换为 float32 并除以 divisor
+				val := int16(binary.LittleEndian.Uint16(buffer[byteOffset:]))
+				out[idx] = float32(val) / divisor
 			}
 		}
 	}

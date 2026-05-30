@@ -174,7 +174,10 @@ func (d *Dequantizer) dequantizeAccessor(accessor *gltf.Accessor, bits uint8) (u
 	// 准备浮点数据存储
 	floatData := make([]float32, count*uint32(componentCount))
 
-	// 解量化参数
+	// 解量化参数 (规范限定 bits ≤ 16, 此处做上限保护)
+	if bits == 0 || bits > 16 {
+		return 0, fmt.Errorf("invalid quantization bits: %d", bits)
+	}
 	maxInteger := float32(math.Pow(2, float64(bits)) - 1)
 	ranges := make([]float32, componentCount)
 	for i := 0; i < componentCount; i++ {
@@ -191,10 +194,12 @@ func (d *Dequantizer) dequantizeAccessor(accessor *gltf.Accessor, bits uint8) (u
 
 		for c := 0; c < componentCount; c++ {
 			// 读取量化值
+			// 始终读取原始整数值 (不应用 normalization),
+			// 因为解量化公式本身处理归一化
 			rawValue, err := readComponent(
 				buffer.Data[offset:],
 				accessor.ComponentType,
-				accessor.Normalized,
+				false,
 			)
 			if err != nil {
 				return 0, err
@@ -424,7 +429,10 @@ func (q *Quantizer) quantizeAccessor(accessor *gltf.Accessor, bits uint8, compon
 	componentSize := gltf.SizeOfComponent(componentType)
 	quantizedData := make([]byte, count*uint32(componentSize)*uint32(componentCount))
 
-	// 量化参数
+	// 量化参数 (规范限定 bits ≤ 16, 此处做上限保护)
+	if bits == 0 || bits > 16 {
+		return 0, fmt.Errorf("invalid quantization bits: %d", bits)
+	}
 	maxInteger := float32(math.Pow(2, float64(bits)) - 1)
 	ranges := make([]float32, componentCount)
 	for i := 0; i < componentCount; i++ {

@@ -38,6 +38,7 @@ type CompressionExtension struct {
 	Count      uint32            `json:"count"`
 	Mode       CompressionMode   `json:"mode"`
 	Filter     CompressionFilter `json:"filter,omitempty"`
+	Fallback   *uint32           `json:"fallback,omitempty"`
 }
 
 func init() {

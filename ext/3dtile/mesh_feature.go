@@ -210,7 +210,7 @@ func WithTextureChannels(channels []uint32) FeatureIDTextureOption {
 // WithTextureCoord 设置纹理坐标
 func WithTextureCoord(texCoord uint32) FeatureIDTextureOption {
 	return func(t *extmesh.FeatureIDTexture) {
-		t.TexCoord = texCoord
+		t.TexCoord = &texCoord
 	}
 }
 

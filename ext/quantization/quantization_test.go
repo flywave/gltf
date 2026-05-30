@@ -1,6 +1,9 @@
 package quantization
 
 import (
+	"encoding/binary"
+	"encoding/json"
+	"math"
 	"testing"
 
 	"github.com/flywave/gltf"
@@ -772,6 +775,171 @@ func TestDequantizeAccessorBufferViewIndexOutOfRange(t *testing.T) {
 	_, err := dequantizer.dequantizeAccessor(doc.Accessors[0], 8)
 	assert.Error(t, err, "应返回错误")
 	assert.Contains(t, err.Error(), "buffer view index out of range", "错误信息应包含'buffer view index out of range'")
+}
+
+func TestQuantization_InvalidBits(t *testing.T) {
+	buf := make([]byte, 4)
+	binary.LittleEndian.PutUint32(buf, math.Float32bits(0))
+	doc := &gltf.Document{
+		Buffers: []*gltf.Buffer{{ByteLength: 4, Data: buf}},
+		BufferViews: []*gltf.BufferView{{Buffer: 0, ByteOffset: 0, ByteLength: 4}},
+		Accessors: []*gltf.Accessor{{
+			BufferView:    gltf.Index(0),
+			ComponentType: gltf.ComponentFloat,
+			Count:         1,
+			Type:          gltf.AccessorScalar,
+			Min:           []float32{0},
+			Max:           []float32{1},
+		}},
+	}
+	q := &Quantizer{doc: doc}
+	dq := &Dequantizer{doc: doc}
+
+	_, err := q.quantizeAccessor(doc.Accessors[0], 0, gltf.ComponentUbyte)
+	assert.ErrorContains(t, err, "invalid quantization bits")
+	_, err = q.quantizeAccessor(doc.Accessors[0], 17, gltf.ComponentUbyte)
+	assert.ErrorContains(t, err, "invalid quantization bits")
+
+	_, err = dq.dequantizeAccessor(doc.Accessors[0], 0)
+	assert.ErrorContains(t, err, "invalid quantization bits")
+	_, err = dq.dequantizeAccessor(doc.Accessors[0], 17)
+	assert.ErrorContains(t, err, "invalid quantization bits")
+}
+
+func TestQuantization_RoundTrip(t *testing.T) {
+	// 创建一个简单三角形进行量化和反量化往返
+	buf := make([]byte, 36) // 3 vertices * 3 components * 4 bytes
+	values := []float32{-0.5, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.5, 0.0}
+	for i, v := range values {
+		binary.LittleEndian.PutUint32(buf[i*4:], math.Float32bits(v))
+	}
+
+	doc := &gltf.Document{
+		Buffers: []*gltf.Buffer{{
+			ByteLength: 36,
+			Data:       buf,
+		}},
+		BufferViews: []*gltf.BufferView{{
+			Buffer:     0,
+			ByteOffset: 0,
+			ByteLength: 36,
+		}},
+		Accessors: []*gltf.Accessor{{
+			BufferView:    gltf.Index(0),
+			ByteOffset:    0,
+			ComponentType: gltf.ComponentFloat,
+			Count:         3,
+			Type:          gltf.AccessorVec3,
+			Min:           []float32{-0.5, 0, 0},
+			Max:           []float32{0.5, 0.5, 0},
+		}},
+		Meshes: []*gltf.Mesh{{
+			Primitives: []*gltf.Primitive{{
+				Attributes: map[string]uint32{"POSITION": 0},
+			}},
+		}},
+	}
+
+	// 量化
+	q := NewQuantizer(doc, &QuantizationExtension{
+		PositionBits: 12,
+	})
+	err := q.Process()
+	require.NoError(t, err)
+	require.Contains(t, doc.ExtensionsUsed, ExtensionName)
+	require.Len(t, doc.Accessors, 2) // 原始 + 量化后的
+
+	quantAcc := doc.Accessors[1]
+	assert.Equal(t, gltf.ComponentUshort, quantAcc.ComponentType, "12 bits should use ushort")
+	assert.True(t, quantAcc.Normalized, "quantized accessor should be normalized")
+	assert.Equal(t, uint32(3), quantAcc.Count)
+
+	// 反量化
+	dq := NewDequantizer(doc)
+	err = dq.Process()
+	require.NoError(t, err)
+	assert.NotContains(t, doc.ExtensionsUsed, ExtensionName)
+
+	// 最终应该有 3 个访问器 (原始 + 量化 + 反量化)
+	finalAcc := doc.Accessors[len(doc.Accessors)-1]
+	assert.Equal(t, gltf.ComponentFloat, finalAcc.ComponentType)
+	assert.Equal(t, uint32(3), finalAcc.Count)
+	assert.Equal(t, uint32(3), finalAcc.Count)
+
+	// 读取反量化后的值并与原始值比较
+	readBuf := make([]byte, 36)
+	copy(readBuf, doc.Buffers[2].Data)
+	decoded := make([]float32, 9)
+	for i := range decoded {
+		decoded[i] = math.Float32frombits(binary.LittleEndian.Uint32(readBuf[i*4:]))
+	}
+	for i, v := range values {
+		assert.InDelta(t, v, decoded[i], 0.001, "value %d mismatch: got %f want %f", i, decoded[i], v)
+	}
+}
+
+func TestQuantization_QuantizeFormula(t *testing.T) {
+	// 验证量化公式的正确性: quantized = round((value - min) / (max - min) * (2^bits - 1))
+	// 对于 value=0.5, min=0, max=1, bits=8 → quantized = round(0.5 * 255) = 128
+	buf := make([]byte, 4)
+	binary.LittleEndian.PutUint32(buf, math.Float32bits(0.5))
+
+	doc := &gltf.Document{
+		Buffers: []*gltf.Buffer{{
+			ByteLength: 4,
+			Data:       buf,
+		}},
+		BufferViews: []*gltf.BufferView{{
+			Buffer:     0,
+			ByteOffset: 0,
+			ByteLength: 4,
+		}},
+		Accessors: []*gltf.Accessor{{
+			BufferView:    gltf.Index(0),
+			ByteOffset:    0,
+			ComponentType: gltf.ComponentFloat,
+			Count:         1,
+			Type:          gltf.AccessorScalar,
+			Min:           []float32{0},
+			Max:           []float32{1},
+		}},
+		Meshes: []*gltf.Mesh{{
+			Primitives: []*gltf.Primitive{{
+				Attributes: map[string]uint32{"WEIGHTS_0": 0},
+			}},
+		}},
+	}
+
+	q := NewQuantizer(doc, &QuantizationExtension{WeightBits: 8})
+	err := q.Process()
+	require.NoError(t, err)
+	require.Len(t, doc.Accessors, 2)
+
+	// 量化后的值应该是 128 (0.5 * 255)
+	quantAcc := doc.Accessors[1]
+	assert.Equal(t, gltf.ComponentUbyte, quantAcc.ComponentType)
+	require.NotNil(t, quantAcc.BufferView)
+	bv := doc.BufferViews[*quantAcc.BufferView]
+	require.Less(t, uint32(0), bv.ByteLength)
+	quantByte := doc.Buffers[bv.Buffer].Data[bv.ByteOffset]
+	assert.Equal(t, byte(128), quantByte, "0.5 quantized to 8 bits should be 128")
+}
+
+func TestQuantization_DeserializeAndMarshal(t *testing.T) {
+	jsonData := []byte(`{"POSITION":14,"NORMAL":8}`)
+	ext, err := Unmarshal(jsonData)
+	require.NoError(t, err)
+	qe := ext.(*QuantizationExtension)
+	assert.Equal(t, uint8(14), qe.PositionBits)
+	assert.Equal(t, uint8(8), qe.NormalBits)
+
+	// 测试序列化后只包含非零字段
+	out, err := json.Marshal(qe)
+	require.NoError(t, err)
+	assert.Contains(t, string(out), `"POSITION":14`)
+	assert.Contains(t, string(out), `"NORMAL":8`)
+	assert.NotContains(t, string(out), `"TANGENT"`)
+	assert.NotContains(t, string(out), `"TEXCOORD"`)
 }
 
 func TestDequantizeAccessorBufferIndexOutOfRange(t *testing.T) {
