@@ -12,8 +12,8 @@ import (
 )
 
 const (
-	ExtensionName = "KHR_gaussian_splatting"
-	SH0           = 0.28209479177387814
+	ExtensionName               = "KHR_gaussian_splatting"
+	SH0 = 0.28209479177387814
 
 	// KHR_gaussian_splatting 定义的属性名
 	PositionAttr = "POSITION"
@@ -29,6 +29,12 @@ const (
 	SH6Attr      = "_SH_6"
 	SH7Attr      = "_SH_7"
 	SH8Attr      = "_SH_8"
+	SH9Attr      = "_SH_9"
+	SH10Attr     = "_SH_10"
+	SH11Attr     = "_SH_11"
+	SH12Attr     = "_SH_12"
+	SH13Attr     = "_SH_13"
+	SH14Attr     = "_SH_14"
 )
 
 func init() {
@@ -36,7 +42,7 @@ func init() {
 }
 
 type GaussianSplatting struct {
-	// 添加一些可能需要的字段，根据规范
+	SpzCompression *SpzCompression `json:"spzCompression,omitempty"`
 }
 
 func UnmarshalGaussianSplatting(data []byte) (interface{}, error) {
@@ -48,7 +54,11 @@ func UnmarshalGaussianSplatting(data []byte) (interface{}, error) {
 }
 
 func (g *GaussianSplatting) MarshalJSON() ([]byte, error) {
-	// 返回空对象而不是空结构体
+	if g.SpzCompression != nil {
+		return json.Marshal(map[string]interface{}{
+			"spzCompression": g.SpzCompression,
+		})
+	}
 	return json.Marshal(map[string]interface{}{})
 }
 
@@ -85,6 +95,8 @@ type VertexData struct {
 	Colors    []float32
 	Scales    []float32
 	Rotations []float32
+	SH        []float32 // 球谐系数（可选），按 spec 每个_SH_N为VEC3(R,G,B)，flat数组 [R0,G0,B0, R1,G1,B1, ...] 逐点拼接
+	ShDegree  int       // 球谐阶数 0-3，0=无SH
 }
 
 // clamp 确保值在指定范围内
@@ -144,6 +156,15 @@ func WireGaussianSplatting(
 		len(vertexData.Scales)/3 != vertexCount ||
 		len(vertexData.Rotations)/4 != vertexCount {
 		return nil, fmt.Errorf("顶点属性长度不一致")
+	}
+
+	if vertexData.ShDegree > 0 {
+		shBands := bandCount(vertexData.ShDegree)
+		expectedSHLen := vertexCount * shBands * 3
+		if len(vertexData.SH) != expectedSHLen {
+			return nil, fmt.Errorf("SH系数长度无效: 有%d个顶点, SH degree=%d (%d bands), 期望 %d, 实际 %d",
+				vertexCount, vertexData.ShDegree, shBands, expectedSHLen, len(vertexData.SH))
+		}
 	}
 
 	// 1. 旋转归一化 (处理零旋转)
@@ -281,6 +302,54 @@ func WireGaussianSplatting(
 				normalized: false,
 			},
 		}...)
+	}
+
+	// 添加SH系数属性（KHR_gaussian_splatting spec: 每个_SH_N为VEC3(R,G,B), FLOAT32）
+	if vertexData.ShDegree > 0 && len(vertexData.SH) > 0 {
+		// SH flat数组布局: [v0_b0_R, v0_b0_G, v0_b0_B, v0_b1_R, ..., v1_b0_R, ...]
+		// 即逐顶点、逐band、逐通道
+		shBands := bandCount(vertexData.ShDegree)
+		expectedLen := vertexCount * shBands * 3
+		if len(vertexData.SH) >= expectedLen {
+			for b := 0; b < shBands; b++ {
+				// 提取第b个band的所有顶点的VEC3数据
+				shData := make([]float32, vertexCount*3)
+				for v := 0; v < vertexCount; v++ {
+					srcIdx := v*shBands*3 + b*3
+					dstIdx := v * 3
+					shData[dstIdx]   = vertexData.SH[srcIdx]
+					shData[dstIdx+1] = vertexData.SH[srcIdx+1]
+					shData[dstIdx+2] = vertexData.SH[srcIdx+2]
+				}
+				// 计算min/max
+				shMin := []float32{shData[0], shData[1], shData[2]}
+				shMax := []float32{shData[0], shData[1], shData[2]}
+				for i := 3; i < len(shData); i += 3 {
+					for j := 0; j < 3; j++ {
+						v := shData[i+j]
+						if v < shMin[j] { shMin[j] = v }
+						if v > shMax[j] { shMax[j] = v }
+					}
+				}
+				attributes = append(attributes, struct {
+					name       string
+					data       []float32
+					compType   gltf.ComponentType
+					dataType   gltf.AccessorType
+					normalized bool
+					min, max   []float32
+					filter     meshopt.CompressionFilter
+				}{
+					name:       shAttrName(b),
+					data:       shData,
+					compType:   gltf.ComponentFloat,
+					dataType:   gltf.AccessorVec3,
+					normalized: false,
+					min:        shMin,
+					max:        shMax,
+				})
+			}
+		}
 	}
 
 	attrs := make(map[string]uint32)
@@ -845,4 +914,27 @@ func processShortComponents(buffer []byte, start uint32, stride uint32, compType
 			}
 		}
 	}
+}
+
+// bandCount 返回给定SH阶数对应的band数量（每个band为VEC3）
+func bandCount(degree int) int {
+	switch degree {
+	case 1:
+		return 3  // (1+1)² - 1 = 3
+	case 2:
+		return 8  // (2+1)² - 1 = 8
+	case 3:
+		return 15 // (3+1)² - 1 = 15
+	default:
+		return 0
+	}
+}
+
+// shAttrName 返回第b个SH band的属性名（_SH_0 ~ _SH_14）
+func shAttrName(band int) string {
+	return [...]string{
+		"_SH_0", "_SH_1", "_SH_2", "_SH_3", "_SH_4",
+		"_SH_5", "_SH_6", "_SH_7", "_SH_8", "_SH_9",
+		"_SH_10", "_SH_11", "_SH_12", "_SH_13", "_SH_14",
+	}[band]
 }
